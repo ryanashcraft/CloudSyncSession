@@ -1,5 +1,6 @@
 import CloudKit
 import CloudKitCodable
+import os.log
 
 protocol ModifyOperation {
     var records: [CKRecord] { get set }
@@ -91,6 +92,31 @@ enum SyncEvent {
     case conflict
     case partialFailure
 
+    var logDescription: String {
+        switch self {
+        case .accountStatusChanged:
+            return "account status changed"
+        case .modify:
+            return "modify"
+        case .continue:
+            return "continue"
+        case .halt:
+            return "halt"
+        case .backoff:
+            return "backoff"
+        case .createZone:
+            return "create zone"
+        case .retry:
+            return "retry"
+        case .splitThenRetry:
+            return "split then retry"
+        case .conflict:
+            return "conflict"
+        case .partialFailure:
+            return "partial failure"
+        }
+    }
+
     init?(error: Error) {
         if let ckError = error as? CKError {
             switch ckError.code {
@@ -144,43 +170,118 @@ enum SyncEvent {
     }
 }
 
-class CloudSyncSession<MO: ModifyOperation> {
-    @Published var state: SyncState<MO>
-    let operationHandler: OperationHandler
-    var onRecordsModified: (([CKRecord]) -> Void)?
+typealias Next = (SyncEvent) -> SyncEvent
 
-    init(initialState: SyncState<MO> = SyncState<MO>(isHalted: true), operationHandler: OperationHandler) {
-        self.state = initialState
-        self.operationHandler = operationHandler
+struct AnyMiddleware<MO: ModifyOperation>: Middleware {
+    init<M: Middleware>(value: M) where M.MO == MO {
+        self.session = value.session
+        self.run = value.run
     }
 
-    func dispatch(event: SyncEvent) {
-        state = state.reduce(event: event)
+    var session: CloudSyncSession<MO>
+    var run: (_ next: Next, _ event: SyncEvent) -> SyncEvent
 
+    func run(next: Next, event: SyncEvent) -> SyncEvent {
+        run(next, event)
+    }
+}
+
+protocol Middleware {
+    associatedtype MO: ModifyOperation
+
+    var session: CloudSyncSession<MO> { get }
+
+    func eraseToAnyMiddleware() -> AnyMiddleware<MO>
+    func run(next: Next, event: SyncEvent) -> SyncEvent
+}
+
+extension Middleware {
+    func eraseToAnyMiddleware() -> AnyMiddleware<MO> {
+        return AnyMiddleware(value: self)
+    }
+}
+
+struct TickMiddleware<MO: ModifyOperation>: Middleware {
+    var session: CloudSyncSession<MO>
+
+    func run(next: Next, event: SyncEvent) -> SyncEvent {
         switch event {
         case .modify:
+            let newEvent = next(event)
+
             tick()
+
+            return newEvent
         default:
-            break
+            return next(event)
         }
     }
 
     private func tick() {
-        if let work = state.currentWork {
+        if let work = session.state.currentWork {
             switch work {
             case .push(let operation):
-                operationHandler.handle(modifyOperation: operation) { result in
+                session.operationHandler.handle(modifyOperation: operation) { result in
                     switch result {
                     case .success(let records):
-                        self.dispatch(event: .continue)
-                        self.onRecordsModified?(records)
+                        session.dispatch(event: .continue)
+                        session.onRecordsModified?(records)
                     case .failure(let error):
                         if let event = SyncEvent(error: error) {
-                            self.dispatch(event: event)
+                            session.dispatch(event: event)
                         }
                     }
                 }
             }
         }
+    }
+}
+
+struct LoggerMiddleware<MO: ModifyOperation>: Middleware {
+    var session: CloudSyncSession<MO>
+
+    var log = OSLog(
+        subsystem: "com.algebraiclabs.CloudSyncSession",
+        category: "event"
+    )
+
+    func run(next: Next, event: SyncEvent) -> SyncEvent {
+        os_log("%{public}@", log: log, type: .debug, event.logDescription)
+
+        return next(event)
+    }
+}
+
+class CloudSyncSession<MO: ModifyOperation> {
+    @Published var state: SyncState<MO>
+    let operationHandler: OperationHandler
+    var onRecordsModified: (([CKRecord]) -> Void)?
+
+    var middlewares = [AnyMiddleware<MO>]()
+
+    init(initialState: SyncState<MO> = SyncState<MO>(isHalted: true), operationHandler: OperationHandler) {
+        self.state = initialState
+        self.operationHandler = operationHandler
+
+        self.middlewares = [
+            LoggerMiddleware<MO>(session: self).eraseToAnyMiddleware(),
+            TickMiddleware<MO>(session: self).eraseToAnyMiddleware(),
+        ]
+    }
+
+    func dispatch(event: SyncEvent) {
+        var middlewaresToRun = Array(self.middlewares.reversed())
+
+        func next(event: SyncEvent) -> SyncEvent {
+            if let middleware = middlewaresToRun.popLast() {
+                return middleware.run(next: next, event: event)
+            } else {
+                state = state.reduce(event: event)
+
+                return event
+            }
+        }
+
+        _ = next(event: event)
     }
 }
