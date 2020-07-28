@@ -91,6 +91,10 @@ public class CloudSyncSession {
         _ = next(event: event)
     }
 
+    public func appendMiddleware<M: Middleware>(_ middleware: M) {
+        middlewares.append(middleware.eraseToAnyMiddleware())
+    }
+
     func logError(_ error: Error) {
         os_log("%{public}@", log: log, type: .error, error.localizedDescription)
     }

@@ -1,7 +1,7 @@
 struct WorkMiddleware: Middleware {
     var session: CloudSyncSession
 
-    func run(next: Next, event: SyncEvent) -> SyncEvent {
+    func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
         case .modify:
             let newEvent = next(event)

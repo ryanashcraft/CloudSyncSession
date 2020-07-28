@@ -1,7 +1,7 @@
 import CloudKit
 
 public struct CloudKitAccountStatusMiddleware: Middleware {
-    var session: CloudSyncSession
+    public var session: CloudSyncSession
     var ckContainer: CKContainer
 
     public init(session: CloudSyncSession, ckContainer: CKContainer) {
@@ -9,7 +9,7 @@ public struct CloudKitAccountStatusMiddleware: Middleware {
         self.ckContainer = ckContainer
     }
 
-    func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
+    public func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
         case .start:
             ckContainer.accountStatus { status, error in

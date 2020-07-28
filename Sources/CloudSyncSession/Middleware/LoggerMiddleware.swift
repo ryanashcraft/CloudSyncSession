@@ -8,7 +8,7 @@ struct LoggerMiddleware: Middleware {
         category: "cloud sync event"
     )
 
-    func run(next: Next, event: SyncEvent) -> SyncEvent {
+    func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         os_log("%{public}@", log: log, type: .debug, event.logDescription)
 
         return next(event)

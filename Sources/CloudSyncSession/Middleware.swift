@@ -1,27 +1,25 @@
-typealias Next = (SyncEvent) -> SyncEvent
-
-struct AnyMiddleware: Middleware {
-    init<M: Middleware>(value: M) {
+public struct AnyMiddleware: Middleware {
+    public init<M: Middleware>(value: M) {
         self.session = value.session
         self.run = value.run
     }
 
-    var session: CloudSyncSession
-    var run: (_ next: Next, _ event: SyncEvent) -> SyncEvent
+    public var session: CloudSyncSession
+    var run: (_ next: (SyncEvent) -> SyncEvent, _ event: SyncEvent) -> SyncEvent
 
-    func run(next: Next, event: SyncEvent) -> SyncEvent {
+    public func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         run(next, event)
     }
 }
 
-protocol Middleware {
+public protocol Middleware {
     var session: CloudSyncSession { get }
 
     func eraseToAnyMiddleware() -> AnyMiddleware
-    func run(next: Next, event: SyncEvent) -> SyncEvent
+    func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent
 }
 
-extension Middleware {
+public extension Middleware {
     func eraseToAnyMiddleware() -> AnyMiddleware {
         return AnyMiddleware(value: self)
     }
