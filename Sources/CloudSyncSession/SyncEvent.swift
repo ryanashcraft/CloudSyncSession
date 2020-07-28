@@ -1,6 +1,6 @@
 import CloudKit
 
-enum SyncEvent {
+public enum SyncEvent {
     case accountStatusChanged(CKAccountStatus)
     case modify([CKRecord])
     case `continue`

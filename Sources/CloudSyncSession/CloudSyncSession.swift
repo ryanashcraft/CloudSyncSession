@@ -54,14 +54,14 @@ struct SyncState {
     }
 }
 
-class CloudSyncSession {
+public class CloudSyncSession {
     @PublishedAfter var state: SyncState
     let operationHandler: OperationHandler
     var onRecordsModified: (([CKRecord]) -> Void)?
 
     var middlewares = [AnyMiddleware]()
 
-    init(initialState: SyncState = SyncState(), operationHandler: OperationHandler) {
+    public init(initialState: SyncState = SyncState(), operationHandler: OperationHandler) {
         self.state = initialState
         self.operationHandler = operationHandler
 
@@ -71,7 +71,7 @@ class CloudSyncSession {
         ]
     }
 
-    func dispatch(event: SyncEvent) {
+    public func dispatch(event: SyncEvent) {
         var middlewaresToRun = Array(self.middlewares.reversed())
 
         func next(event: SyncEvent) -> SyncEvent {
