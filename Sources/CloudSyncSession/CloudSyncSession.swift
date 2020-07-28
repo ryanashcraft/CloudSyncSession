@@ -1,39 +1,6 @@
-import Combine
 import CloudKit
 import CloudKitCodable
 import os.log
-
-protocol ModifyOperation {
-    var records: [CKRecord] { get set }
-
-    init()
-}
-
-extension ModifyOperation {
-    init(records: [CKRecord]) {
-        self.init()
-        self.records = records
-    }
-}
-
-protocol OperationHandler {
-    func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<[CKRecord], Error>) -> Void)
-}
-
-extension CKModifyRecordsOperation: ModifyOperation {
-    convenience init(records: [CKRecord]) {
-        self.init(recordsToSave: records, recordIDsToDelete: [])
-    }
-
-    var records: [CKRecord] {
-        get {
-            self.recordsToSave ?? []
-        }
-        set {
-            self.recordsToSave = newValue
-        }
-    }
-}
 
 enum SyncWork {
     case push(ModifyOperation)
@@ -41,7 +8,7 @@ enum SyncWork {
 
 typealias Dispatch = (SyncEvent) -> Void
 
-struct SyncState<MO: ModifyOperation> {
+struct SyncState {
     var workQueue = [SyncWork]()
     var currentWork: SyncWork?
 
@@ -68,7 +35,7 @@ struct SyncState<MO: ModifyOperation> {
                 return state
             }
 
-            let work = SyncWork.push(MO(records: records))
+            let work = SyncWork.push(ModifyOperation(records: records))
 
             if state.currentWork == nil {
                 state.currentWork = work
@@ -87,192 +54,20 @@ struct SyncState<MO: ModifyOperation> {
     }
 }
 
-enum SyncEvent {
-    case accountStatusChanged(CKAccountStatus)
-    case modify([CKRecord])
-    case `continue`
-    case halt
-    case backoff
-    case createZone
-    case retry
-    case splitThenRetry
-    case conflict
-    case partialFailure
-
-    var logDescription: String {
-        switch self {
-        case .accountStatusChanged:
-            return "account status changed"
-        case .modify:
-            return "modify"
-        case .continue:
-            return "continue"
-        case .halt:
-            return "halt"
-        case .backoff:
-            return "backoff"
-        case .createZone:
-            return "create zone"
-        case .retry:
-            return "retry"
-        case .splitThenRetry:
-            return "split then retry"
-        case .conflict:
-            return "conflict"
-        case .partialFailure:
-            return "partial failure"
-        }
-    }
-
-    init?(error: Error) {
-        if let ckError = error as? CKError {
-            switch ckError.code {
-            case .notAuthenticated,
-                 .managedAccountRestricted,
-                 .quotaExceeded,
-                 .badDatabase,
-                 .incompatibleVersion,
-                 .permissionFailure,
-                 .missingEntitlement,
-                 .badContainer,
-                 .constraintViolation,
-                 .referenceViolation,
-                 .invalidArguments,
-                 .serverRejectedRequest,
-                 .resultsTruncated,
-                 .changeTokenExpired:
-                self = .halt
-            case .internalError,
-                 .networkUnavailable,
-                 .networkFailure,
-                 .serviceUnavailable,
-                 .zoneBusy,
-                 .requestRateLimited:
-                self = .backoff
-            case .serverResponseLost:
-                self = .retry
-            case .partialFailure, .batchRequestFailed:
-                self = .partialFailure
-            case .serverRecordChanged:
-                self = .conflict
-            case .limitExceeded:
-                self = .splitThenRetry
-            case .zoneNotFound, .userDeletedZone:
-                self = .createZone
-            case .assetNotAvailable,
-                 .assetFileNotFound,
-                 .assetFileModified,
-                 .participantMayNeedVerification,
-                 .alreadyShared,
-                 .tooManyParticipants,
-                 .unknownItem,
-                 .operationCancelled:
-                return nil
-            @unknown default:
-                return nil
-            }
-        } else {
-            self = .halt
-        }
-    }
-}
-
-typealias Next = (SyncEvent) -> SyncEvent
-
-struct AnyMiddleware<MO: ModifyOperation>: Middleware {
-    init<M: Middleware>(value: M) where M.MO == MO {
-        self.session = value.session
-        self.run = value.run
-    }
-
-    var session: CloudSyncSession<MO>
-    var run: (_ next: Next, _ event: SyncEvent) -> SyncEvent
-
-    func run(next: Next, event: SyncEvent) -> SyncEvent {
-        run(next, event)
-    }
-}
-
-protocol Middleware {
-    associatedtype MO: ModifyOperation
-
-    var session: CloudSyncSession<MO> { get }
-
-    func eraseToAnyMiddleware() -> AnyMiddleware<MO>
-    func run(next: Next, event: SyncEvent) -> SyncEvent
-}
-
-extension Middleware {
-    func eraseToAnyMiddleware() -> AnyMiddleware<MO> {
-        return AnyMiddleware(value: self)
-    }
-}
-
-struct TickMiddleware<MO: ModifyOperation>: Middleware {
-    var session: CloudSyncSession<MO>
-
-    func run(next: Next, event: SyncEvent) -> SyncEvent {
-        switch event {
-        case .modify:
-            let newEvent = next(event)
-
-            tick()
-
-            return newEvent
-        default:
-            return next(event)
-        }
-    }
-
-    private func tick() {
-        if let work = session.state.currentWork {
-            switch work {
-            case .push(let operation):
-                session.operationHandler.handle(modifyOperation: operation) { result in
-                    switch result {
-                    case .success(let records):
-                        session.dispatch(event: .continue)
-                        session.onRecordsModified?(records)
-                    case .failure(let error):
-                        if let event = SyncEvent(error: error) {
-                            session.dispatch(event: event)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-struct LoggerMiddleware<MO: ModifyOperation>: Middleware {
-    var session: CloudSyncSession<MO>
-
-    var log = OSLog(
-        subsystem: "com.algebraiclabs.CloudSyncSession",
-        category: "event"
-    )
-
-    func run(next: Next, event: SyncEvent) -> SyncEvent {
-        os_log("%{public}@", log: log, type: .debug, event.logDescription)
-
-        return next(event)
-    }
-}
-
-class CloudSyncSession<MO: ModifyOperation> {
-    @PublishedAfter var state: SyncState<MO>
+class CloudSyncSession {
+    @PublishedAfter var state: SyncState
     let operationHandler: OperationHandler
     var onRecordsModified: (([CKRecord]) -> Void)?
 
-    var middlewares = [AnyMiddleware<MO>]()
+    var middlewares = [AnyMiddleware]()
 
-    init(initialState: SyncState<MO> = SyncState<MO>(), operationHandler: OperationHandler) {
+    init(initialState: SyncState = SyncState(), operationHandler: OperationHandler) {
         self.state = initialState
         self.operationHandler = operationHandler
 
         self.middlewares = [
-            LoggerMiddleware<MO>(session: self).eraseToAnyMiddleware(),
-            TickMiddleware<MO>(session: self).eraseToAnyMiddleware(),
+            LoggerMiddleware(session: self).eraseToAnyMiddleware(),
+            WorkMiddleware(session: self).eraseToAnyMiddleware(),
         ]
     }
 
@@ -290,29 +85,5 @@ class CloudSyncSession<MO: ModifyOperation> {
         }
 
         _ = next(event: event)
-    }
-}
-
-@propertyWrapper
-class PublishedAfter<Value> {
-    private var val: Value
-    private let subject: CurrentValueSubject<Value, Never>
-
-    init(wrappedValue value: Value) {
-        val = value
-        subject = CurrentValueSubject(value)
-        wrappedValue = value
-    }
-
-    var wrappedValue: Value {
-        set {
-            val = newValue
-            subject.send(val)
-        }
-        get { val }
-    }
-
-    public var projectedValue: CurrentValueSubject<Value, Never> {
-        get { subject }
     }
 }
