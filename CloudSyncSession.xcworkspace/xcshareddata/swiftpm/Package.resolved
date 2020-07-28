@@ -1,0 +1,16 @@
+{
+  "object": {
+    "pins": [
+      {
+        "package": "Cirrus",
+        "repositoryURL": "https://github.com/jayhickey/Cirrus.git",
+        "state": {
+          "branch": null,
+          "revision": "07882fcda9e7ab8a6f4f59fb21f2535a74e47224",
+          "version": "0.1.0"
+        }
+      }
+    ]
+  },
+  "version": 1
+}
