@@ -1,5 +1,4 @@
 import CloudKit
-import os.log
 
 public class CloudKitOperationHandler: OperationHandler {
     let database: CKDatabase

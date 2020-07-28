@@ -41,11 +41,8 @@ final class CloudSyncSessionTests: XCTestCase {
         let expectation = self.expectation(description: "work")
 
         let mockOperationHandler = SuccessfulMockOperationHandler()
-        let initialState = SyncState(hasGoodAccountStatus: true)
-        let session = CloudSyncSession(
-            initialState: initialState,
-            operationHandler: mockOperationHandler
-        )
+        let session = CloudSyncSession(operationHandler: mockOperationHandler)
+        session.state = SyncState(hasGoodAccountStatus: true)
 
         session.onRecordsModified = { records in
             XCTAssertEqual(records.count, 1)
@@ -64,11 +61,8 @@ final class CloudSyncSessionTests: XCTestCase {
         let expectation = self.expectation(description: "work")
 
         let mockOperationHandler = FailingMockOperationHandler()
-        let initialState = SyncState(hasGoodAccountStatus: true)
-        let session = CloudSyncSession(
-            initialState: initialState,
-            operationHandler: mockOperationHandler
-        )
+        let session = CloudSyncSession(operationHandler: mockOperationHandler)
+        session.state = SyncState(hasGoodAccountStatus: true)
 
         session.onRecordsModified = { records in
             XCTFail()
@@ -92,11 +86,8 @@ final class CloudSyncSessionTests: XCTestCase {
         expectation.isInverted = true
 
         let mockOperationHandler = SuccessfulMockOperationHandler()
-        let initialState = SyncState(hasGoodAccountStatus: true, hasHalted: true)
-        let session = CloudSyncSession(
-            initialState: initialState,
-            operationHandler: mockOperationHandler
-        )
+        let session = CloudSyncSession(operationHandler: mockOperationHandler)
+        session.state = SyncState(hasGoodAccountStatus: true, hasHalted: true)
 
         session.onRecordsModified = { records in
             expectation.fulfill()
@@ -113,11 +104,8 @@ final class CloudSyncSessionTests: XCTestCase {
         expectation.assertForOverFulfill = false
 
         let mockOperationHandler = FailingMockOperationHandler()
-        let initialState = SyncState(hasGoodAccountStatus: true)
-        let session = CloudSyncSession(
-            initialState: initialState,
-            operationHandler: mockOperationHandler
-        )
+        let session = CloudSyncSession(operationHandler: mockOperationHandler)
+        session.state = SyncState(hasGoodAccountStatus: true)
 
         session.$state
             .receive(on: DispatchQueue.main)
