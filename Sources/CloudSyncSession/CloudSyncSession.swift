@@ -1,3 +1,4 @@
+import Combine
 import CloudKit
 import CloudKitCodable
 import os.log
@@ -41,9 +42,15 @@ enum SyncWork {
 typealias Dispatch = (SyncEvent) -> Void
 
 struct SyncState<MO: ModifyOperation> {
-    var isHalted: Bool
     var workQueue = [SyncWork]()
     var currentWork: SyncWork?
+
+    var hasGoodAccountStatus: Bool? = nil
+    var hasHalted: Bool = false
+
+    var isRunning: Bool {
+        (hasGoodAccountStatus ?? false) && !hasHalted
+    }
 
     func reduce(event: SyncEvent) -> SyncState {
         var state = self
@@ -52,12 +59,12 @@ struct SyncState<MO: ModifyOperation> {
         case .accountStatusChanged(let accountStatus):
             switch accountStatus {
             case .available:
-                state.isHalted = false
+                state.hasGoodAccountStatus = true
             default:
-                state.isHalted = true
+                state.hasGoodAccountStatus = false
             }
         case .modify(let records):
-            guard !state.isHalted else {
+            guard state.isRunning else {
                 return state
             }
 
@@ -71,7 +78,7 @@ struct SyncState<MO: ModifyOperation> {
         case .continue:
             state.currentWork = nil
         case .halt:
-            state.isHalted = true
+            state.hasHalted = true
         default:
             break
         }
@@ -253,13 +260,13 @@ struct LoggerMiddleware<MO: ModifyOperation>: Middleware {
 }
 
 class CloudSyncSession<MO: ModifyOperation> {
-    @Published var state: SyncState<MO>
+    @PublishedAfter var state: SyncState<MO>
     let operationHandler: OperationHandler
     var onRecordsModified: (([CKRecord]) -> Void)?
 
     var middlewares = [AnyMiddleware<MO>]()
 
-    init(initialState: SyncState<MO> = SyncState<MO>(isHalted: true), operationHandler: OperationHandler) {
+    init(initialState: SyncState<MO> = SyncState<MO>(), operationHandler: OperationHandler) {
         self.state = initialState
         self.operationHandler = operationHandler
 
@@ -283,5 +290,29 @@ class CloudSyncSession<MO: ModifyOperation> {
         }
 
         _ = next(event: event)
+    }
+}
+
+@propertyWrapper
+class PublishedAfter<Value> {
+    private var val: Value
+    private let subject: CurrentValueSubject<Value, Never>
+
+    init(wrappedValue value: Value) {
+        val = value
+        subject = CurrentValueSubject(value)
+        wrappedValue = value
+    }
+
+    var wrappedValue: Value {
+        set {
+            val = newValue
+            subject.send(val)
+        }
+        get { val }
+    }
+
+    public var projectedValue: CurrentValueSubject<Value, Never> {
+        get { subject }
     }
 }

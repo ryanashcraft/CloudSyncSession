@@ -40,14 +40,14 @@ final class CloudSyncSessionTests: XCTestCase {
 
         session.dispatch(event: .accountStatusChanged(.available))
 
-        XCTAssertEqual(session.state.isHalted, false)
+        XCTAssertTrue(session.state.isRunning)
     }
 
     func testModifySuccess() {
         let expectation = self.expectation(description: "work")
 
         let mockOperationHandler = SuccessfulMockOperationHandler()
-        let initialState = SyncState<MockModifyRecordsOperation>(isHalted: false)
+        let initialState = SyncState<MockModifyRecordsOperation>(hasGoodAccountStatus: true)
         let session = CloudSyncSession<MockModifyRecordsOperation>(
             initialState: initialState,
             operationHandler: mockOperationHandler
@@ -70,7 +70,7 @@ final class CloudSyncSessionTests: XCTestCase {
         let expectation = self.expectation(description: "work")
 
         let mockOperationHandler = FailingMockOperationHandler()
-        let initialState = SyncState<MockModifyRecordsOperation>(isHalted: false)
+        let initialState = SyncState<MockModifyRecordsOperation>(hasGoodAccountStatus: true)
         let session = CloudSyncSession<MockModifyRecordsOperation>(
             initialState: initialState,
             operationHandler: mockOperationHandler
@@ -82,7 +82,7 @@ final class CloudSyncSessionTests: XCTestCase {
 
         session.$state
             .sink { newState in
-                if newState.isHalted {
+                if !newState.isRunning {
                     expectation.fulfill()
                 }
             }
@@ -98,7 +98,7 @@ final class CloudSyncSessionTests: XCTestCase {
         expectation.isInverted = true
 
         let mockOperationHandler = SuccessfulMockOperationHandler()
-        let initialState = SyncState<MockModifyRecordsOperation>(isHalted: true)
+        let initialState = SyncState<MockModifyRecordsOperation>(hasGoodAccountStatus: true, hasHalted: true)
         let session = CloudSyncSession<MockModifyRecordsOperation>(
             initialState: initialState,
             operationHandler: mockOperationHandler
@@ -107,6 +107,34 @@ final class CloudSyncSessionTests: XCTestCase {
         session.onRecordsModified = { records in
             expectation.fulfill()
         }
+
+        session.dispatch(event: .modify([testRecord]))
+
+        wait(for: [expectation], timeout: 1)
+    }
+
+    func testDoesNotUnhaltAfterFailure() {
+        var tasks = Set<AnyCancellable>()
+        let expectation = self.expectation(description: "work")
+        expectation.assertForOverFulfill = false
+
+        let mockOperationHandler = FailingMockOperationHandler()
+        let initialState = SyncState<MockModifyRecordsOperation>(hasGoodAccountStatus: true)
+        let session = CloudSyncSession<MockModifyRecordsOperation>(
+            initialState: initialState,
+            operationHandler: mockOperationHandler
+        )
+
+        session.$state
+            .receive(on: DispatchQueue.main)
+            .sink { newState in
+                if newState.hasHalted {
+                    session.dispatch(event: .accountStatusChanged(.available))
+                    XCTAssertFalse(session.state.isRunning)
+                    expectation.fulfill()
+                }
+            }
+            .store(in: &tasks)
 
         session.dispatch(event: .modify([testRecord]))
 
