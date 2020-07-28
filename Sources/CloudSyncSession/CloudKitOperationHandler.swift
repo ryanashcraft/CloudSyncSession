@@ -12,7 +12,7 @@ public class CloudKitOperationHandler: OperationHandler {
         self.operationQueue = operationQueue
     }
 
-    func handle(
+    public func handle(
         modifyOperation: ModifyOperation,
         completion: @escaping (Result<[CKRecord], Error>) -> Void
     ) {

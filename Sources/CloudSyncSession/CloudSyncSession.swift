@@ -55,14 +55,13 @@ struct SyncState {
 }
 
 public class CloudSyncSession {
-    @PublishedAfter var state: SyncState
+    @PublishedAfter var state: SyncState = SyncState()
     let operationHandler: OperationHandler
     var onRecordsModified: (([CKRecord]) -> Void)?
 
     var middlewares = [AnyMiddleware]()
 
-    public init(initialState: SyncState = SyncState(), operationHandler: OperationHandler) {
-        self.state = initialState
+    public init(operationHandler: OperationHandler) {
         self.operationHandler = operationHandler
 
         self.middlewares = [

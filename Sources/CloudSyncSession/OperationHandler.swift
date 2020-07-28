@@ -1,6 +1,6 @@
 import CloudKit
 
-struct ModifyOperation {
+public struct ModifyOperation {
     var records: [CKRecord]
 
     init(records: [CKRecord]) {
@@ -8,6 +8,6 @@ struct ModifyOperation {
     }
 }
 
-protocol OperationHandler {
+public protocol OperationHandler {
     func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<[CKRecord], Error>) -> Void)
 }
