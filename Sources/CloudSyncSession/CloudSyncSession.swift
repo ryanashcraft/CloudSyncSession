@@ -61,6 +61,11 @@ public class CloudSyncSession {
 
     var middlewares = [AnyMiddleware]()
 
+    private var log = OSLog(
+        subsystem: "com.algebraiclabs.CloudSyncSession",
+        category: "cloud sync error"
+    )
+
     public init(operationHandler: OperationHandler) {
         self.operationHandler = operationHandler
 
@@ -84,5 +89,9 @@ public class CloudSyncSession {
         }
 
         _ = next(event: event)
+    }
+
+    func logError(_ error: Error) {
+        os_log("%{public}@", log: log, type: .error, error.localizedDescription)
     }
 }

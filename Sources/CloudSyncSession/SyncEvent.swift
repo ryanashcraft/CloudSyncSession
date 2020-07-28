@@ -1,6 +1,7 @@
 import CloudKit
 
 public enum SyncEvent {
+    case start
     case accountStatusChanged(CKAccountStatus)
     case modify([CKRecord])
     case `continue`
@@ -14,6 +15,8 @@ public enum SyncEvent {
 
     var logDescription: String {
         switch self {
+        case .start:
+            return "start"
         case .accountStatusChanged:
             return "account status changed"
         case .modify:
