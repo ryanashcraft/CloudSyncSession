@@ -56,10 +56,12 @@ struct SyncState {
 
 public class CloudSyncSession {
     @PublishedAfter var state: SyncState = SyncState()
-    let operationHandler: OperationHandler
-    var onRecordsModified: (([CKRecord]) -> Void)?
 
-    var middlewares = [AnyMiddleware]()
+    let operationHandler: OperationHandler
+
+    private var middlewares = [AnyMiddleware]()
+
+    public var onRecordsModified: (([CKRecord]) -> Void)?
 
     private var log = OSLog(
         subsystem: "com.algebraiclabs.CloudSyncSession",
