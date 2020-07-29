@@ -136,11 +136,11 @@ public class CloudSyncSession {
                 return .retry
             case .partialFailure:
                 guard let partialErrors = ckError.userInfo[CKPartialErrorsByItemIDKey] as? [CKRecord.ID: Error] else {
-                    return nil
+                    return .halt
                 }
 
                 guard case let .push(operation) = work else {
-                    return nil
+                    return .halt
                 }
 
                 let recordIDsNotSavedOrDeleted = partialErrors.keys
@@ -163,6 +163,11 @@ public class CloudSyncSession {
 
                 let resolvedConflictsToSave = serverRecordChangedErrors.compactMap { error in
                     self.resolveConflict(error: error)
+                }
+
+                if resolvedConflictsToSave.count != serverRecordChangedErrors.count {
+                    // If couldn't handle conflict for some of the records, abort
+                    return .halt
                 }
 
                 let batchRequestRecordsToSave = operation.records.filter { record in

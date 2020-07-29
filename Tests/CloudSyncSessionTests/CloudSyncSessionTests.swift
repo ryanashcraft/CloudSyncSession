@@ -18,6 +18,14 @@ class FailingMockOperationHandler: OperationHandler {
     }
 }
 
+class PartialFailureMockOperationHandler: OperationHandler {
+    func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<[CKRecord], Error>) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
+            completion(.failure(CKError(.partialFailure)))
+        }
+    }
+}
+
 private var testIdentifier = "8B14FD76-EA56-49B0-A184-6C01828BA20A"
 
 private var testRecord = CKRecord(
@@ -113,6 +121,50 @@ final class CloudSyncSessionTests: XCTestCase {
                 if newState.hasHalted {
                     session.dispatch(event: .accountStatusChanged(.available))
                     XCTAssertFalse(session.state.isRunning)
+                    expectation.fulfill()
+                }
+            }
+            .store(in: &tasks)
+
+        session.dispatch(event: .modify([testRecord]))
+
+        wait(for: [expectation], timeout: 1)
+    }
+
+    func testResumesWorkAfterUnhalting() {
+        let expectation = self.expectation(description: "work")
+
+        let mockOperationHandler = SuccessfulMockOperationHandler()
+        let session = CloudSyncSession(operationHandler: mockOperationHandler)
+        session.state = SyncState(hasGoodAccountStatus: false)
+
+        session.onRecordsModified = { records in
+            XCTAssertEqual(records.count, 1)
+            XCTAssertNil(session.state.currentWork)
+
+            expectation.fulfill()
+        }
+
+        session.dispatch(event: .modify([testRecord]))
+        session.dispatch(event: .accountStatusChanged(.available))
+
+        wait(for: [expectation], timeout: 1)
+    }
+
+    func testHaltAfterPartialFailureWithoutRecovery() {
+        var tasks = Set<AnyCancellable>()
+        let expectation = self.expectation(description: "work")
+
+        let mockOperationHandler = PartialFailureMockOperationHandler()
+        let session = CloudSyncSession(operationHandler: mockOperationHandler)
+        session.state = SyncState(hasGoodAccountStatus: true)
+
+        // Won't recover because no conflict handler set up
+
+        session.$state
+            .receive(on: DispatchQueue.main)
+            .sink { newState in
+                if newState.hasHalted {
                     expectation.fulfill()
                 }
             }
