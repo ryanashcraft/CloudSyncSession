@@ -2,16 +2,24 @@ struct WorkMiddleware: Middleware {
     var session: CloudSyncSession
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
-        switch event {
-        case .modify:
-            let newEvent = next(event)
+        let prevState = session.state
+        let event = next(event)
+        let newState = session.state
 
+        let isWorkEvent: Bool = {
+            switch event {
+            case .modify, .resolveConflict:
+                return true
+            default:
+                return false
+            }
+        }()
+
+        if isWorkEvent || (!prevState.isRunning && newState.isRunning) {
             work()
-
-            return newEvent
-        default:
-            return next(event)
         }
+
+        return event
     }
 
     private func work() {
@@ -24,7 +32,9 @@ struct WorkMiddleware: Middleware {
                         session.dispatch(event: .continue)
                         session.onRecordsModified?(records)
                     case .failure(let error):
-                        if let event = SyncEvent(error: error) {
+                        session.logError(error)
+
+                        if let event = session.mapErrorToEvent(error: error, work: work) {
                             session.dispatch(event: event)
                         }
                     }

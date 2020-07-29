@@ -25,7 +25,9 @@ public class CloudKitOperationHandler: OperationHandler {
         }
 
         let operation = CKModifyRecordsOperation(
-            recordsToSave: recordsToSave, recordIDsToDelete: recordIDsToDelete)
+            recordsToSave: recordsToSave,
+            recordIDsToDelete: recordIDsToDelete
+        )
 
         operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
             if let error = error {

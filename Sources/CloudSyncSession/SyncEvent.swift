@@ -4,6 +4,7 @@ public enum SyncEvent {
     case start
     case accountStatusChanged(CKAccountStatus)
     case modify([CKRecord])
+    case resolveConflict([CKRecord])
     case `continue`
     case halt
     case backoff
@@ -17,10 +18,12 @@ public enum SyncEvent {
         switch self {
         case .start:
             return "start"
-        case .accountStatusChanged:
-            return "account status changed"
-        case .modify:
-            return "modify"
+        case .accountStatusChanged(let status):
+            return "account status changed: \(status)"
+        case .modify(let records):
+            return "modify \(records.count) records"
+        case .resolveConflict(let records):
+            return "resolved \(records.count) records"
         case .continue:
             return "continue"
         case .halt:
@@ -37,58 +40,6 @@ public enum SyncEvent {
             return "conflict"
         case .partialFailure:
             return "partial failure"
-        }
-    }
-
-    init?(error: Error) {
-        if let ckError = error as? CKError {
-            switch ckError.code {
-            case .notAuthenticated,
-                 .managedAccountRestricted,
-                 .quotaExceeded,
-                 .badDatabase,
-                 .incompatibleVersion,
-                 .permissionFailure,
-                 .missingEntitlement,
-                 .badContainer,
-                 .constraintViolation,
-                 .referenceViolation,
-                 .invalidArguments,
-                 .serverRejectedRequest,
-                 .resultsTruncated,
-                 .changeTokenExpired:
-                self = .halt
-            case .internalError,
-                 .networkUnavailable,
-                 .networkFailure,
-                 .serviceUnavailable,
-                 .zoneBusy,
-                 .requestRateLimited:
-                self = .backoff
-            case .serverResponseLost:
-                self = .retry
-            case .partialFailure, .batchRequestFailed:
-                self = .partialFailure
-            case .serverRecordChanged:
-                self = .conflict
-            case .limitExceeded:
-                self = .splitThenRetry
-            case .zoneNotFound, .userDeletedZone:
-                self = .createZone
-            case .assetNotAvailable,
-                 .assetFileNotFound,
-                 .assetFileModified,
-                 .participantMayNeedVerification,
-                 .alreadyShared,
-                 .tooManyParticipants,
-                 .unknownItem,
-                 .operationCancelled:
-                return nil
-            @unknown default:
-                return nil
-            }
-        } else {
-            self = .halt
         }
     }
 }

@@ -10,13 +10,16 @@ typealias Dispatch = (SyncEvent) -> Void
 
 struct SyncState {
     var workQueue = [SyncWork]()
-    var currentWork: SyncWork?
 
     var hasGoodAccountStatus: Bool? = nil
     var hasHalted: Bool = false
 
     var isRunning: Bool {
         (hasGoodAccountStatus ?? false) && !hasHalted
+    }
+
+    var currentWork: SyncWork? {
+        isRunning ? workQueue.first : nil
     }
 
     func reduce(event: SyncEvent) -> SyncState {
@@ -31,19 +34,19 @@ struct SyncState {
                 state.hasGoodAccountStatus = false
             }
         case .modify(let records):
-            guard state.isRunning else {
-                return state
-            }
-
             let work = SyncWork.push(ModifyOperation(records: records))
 
-            if state.currentWork == nil {
-                state.currentWork = work
-            } else {
-                state.workQueue.append(work)
+            state.workQueue.append(work)
+        case .resolveConflict(let records):
+            let work = SyncWork.push(ModifyOperation(records: records))
+
+            if !state.workQueue.isEmpty {
+                state.workQueue[0] = work
             }
         case .continue:
-            state.currentWork = nil
+            if !state.workQueue.isEmpty {
+                state.workQueue.removeFirst()
+            }
         case .halt:
             state.hasHalted = true
         default:
@@ -62,6 +65,8 @@ public class CloudSyncSession {
     private var middlewares = [AnyMiddleware]()
 
     public var onRecordsModified: (([CKRecord]) -> Void)?
+
+    public var resolveConflict: ((CKRecord, CKRecord) -> CKRecord?)?
 
     private var log = OSLog(
         subsystem: "com.algebraiclabs.CloudSyncSession",
@@ -99,5 +104,161 @@ public class CloudSyncSession {
 
     func logError(_ error: Error) {
         os_log("%{public}@", log: log, type: .error, error.localizedDescription)
+    }
+
+    func mapErrorToEvent(error: Error, work: SyncWork) -> SyncEvent? {
+        if let ckError = error as? CKError {
+            switch ckError.code {
+            case .notAuthenticated,
+                 .managedAccountRestricted,
+                 .quotaExceeded,
+                 .badDatabase,
+                 .incompatibleVersion,
+                 .permissionFailure,
+                 .missingEntitlement,
+                 .badContainer,
+                 .constraintViolation,
+                 .referenceViolation,
+                 .invalidArguments,
+                 .serverRejectedRequest,
+                 .resultsTruncated,
+                 .changeTokenExpired,
+                 .batchRequestFailed:
+                return .halt
+            case .internalError,
+                 .networkUnavailable,
+                 .networkFailure,
+                 .serviceUnavailable,
+                 .zoneBusy,
+                 .requestRateLimited:
+                return .backoff
+            case .serverResponseLost:
+                return .retry
+            case .partialFailure:
+                guard let partialErrors = ckError.userInfo[CKPartialErrorsByItemIDKey] as? [CKRecord.ID: Error] else {
+                    return nil
+                }
+
+                guard case let .push(operation) = work else {
+                    return nil
+                }
+
+                let recordIDsNotSavedOrDeleted = partialErrors.keys
+
+                let batchRequestFailedRecordIDs = partialErrors.filter({ (_, error) in
+                    if let error = error as? CKError, error.code == .batchRequestFailed {
+                        return true
+                    }
+
+                    return false
+                }).keys
+
+                let serverRecordChangedErrors = partialErrors.filter({ (_, error) in
+                    if let error = error as? CKError, error.code == .serverRecordChanged {
+                        return true
+                    }
+
+                    return false
+                }).values
+
+                let resolvedConflictsToSave = serverRecordChangedErrors.compactMap { error in
+                    self.resolveConflict(error: error)
+                }
+
+                let batchRequestRecordsToSave = operation.records.filter { record in
+                    !resolvedConflictsToSave.map { $0.recordID }.contains(record.recordID)
+                        && batchRequestFailedRecordIDs.contains(record.recordID)
+                }
+                //                    let failedRecordIDsToDelete = recordIDsToDelete.filter(recordIDsNotSavedOrDeleted.contains)
+
+                let allResolvedRecordsToSave = batchRequestRecordsToSave + resolvedConflictsToSave
+
+                guard !allResolvedRecordsToSave.isEmpty else {
+                    return nil
+                }
+
+                return .resolveConflict(allResolvedRecordsToSave)
+            case .serverRecordChanged:
+                return .conflict
+            case .limitExceeded:
+                return .splitThenRetry
+            case .zoneNotFound, .userDeletedZone:
+                return .createZone
+            case .assetNotAvailable,
+                 .assetFileNotFound,
+                 .assetFileModified,
+                 .participantMayNeedVerification,
+                 .alreadyShared,
+                 .tooManyParticipants,
+                 .unknownItem,
+                 .operationCancelled:
+                return nil
+            @unknown default:
+                return nil
+            }
+        } else {
+            return .halt
+        }
+    }
+
+    func resolveConflict(error: Error) -> CKRecord? {
+        guard let effectiveError = error as? CKError else {
+            os_log(
+                "resolveConflict called on an error that was not a CKError. The error was %{public}@",
+                log: log,
+                type: .fault,
+                String(describing: self))
+
+
+            return nil
+        }
+
+        guard effectiveError.code == .serverRecordChanged else {
+            os_log(
+                "resolveConflict called on a CKError that was not a serverRecordChanged error. The error was %{public}@",
+                log: log,
+                type: .fault,
+                String(describing: effectiveError))
+
+            return nil
+        }
+
+        guard let clientRecord = effectiveError.clientRecord else {
+            os_log(
+                "Failed to obtain client record from serverRecordChanged error. The error was %{public}@",
+                log: log,
+                type: .fault,
+                String(describing: effectiveError))
+
+            return nil
+        }
+
+        guard let serverRecord = effectiveError.serverRecord else {
+            os_log(
+                "Failed to obtain server record from serverRecordChanged error. The error was %{public}@",
+                log: log,
+                type: .fault,
+                String(describing: effectiveError))
+
+            return nil
+        }
+
+        os_log(
+            "CloudKit conflict with record of type %{public}@. Running conflict resolver", log: log,
+            type: .error, serverRecord.recordType)
+
+        guard let resolveConflict = self.resolveConflict else {
+            return nil
+        }
+
+        guard let resolvedRecord = resolveConflict(clientRecord, serverRecord) else {
+            return nil
+        }
+
+        // Always return the server record so we don't end up in a conflict loop (the server record has the change tag we want to use)
+        // https://developer.apple.com/documentation/cloudkit/ckerror/2325208-serverrecordchanged
+        resolvedRecord.allKeys().forEach { serverRecord[$0] = resolvedRecord[$0] }
+
+        return serverRecord
     }
 }
