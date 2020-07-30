@@ -8,7 +8,7 @@ struct WorkMiddleware: Middleware {
 
         let isWorkEvent: Bool = {
             switch event {
-            case .modify, .resolveConflict:
+            case .modify, .resolveConflict, .clearChangeToken, .fetch:
                 return true
             default:
                 return false
@@ -25,20 +25,12 @@ struct WorkMiddleware: Middleware {
     private func work() {
         if let work = session.state.currentWork {
             switch work {
+            case .pull(let operation):
+                session.operationHandler.handle(fetchOperation: operation, dispatch: session.dispatch)
             case .push(let operation):
-                session.operationHandler.handle(modifyOperation: operation) { result in
-                    switch result {
-                    case .success(let records):
-                        session.dispatch(event: .continue)
-                        session.onRecordsModified?(records)
-                    case .failure(let error):
-                        session.logError(error)
-
-                        if let event = session.mapErrorToEvent(error: error, work: work) {
-                            session.dispatch(event: event)
-                        }
-                    }
-                }
+                session.operationHandler.handle(modifyOperation: operation, dispatch: session.dispatch)
+            case .createZone(let operation):
+                session.operationHandler.handle(createZoneOperation: operation, dispatch: session.dispatch)
             }
         }
     }
