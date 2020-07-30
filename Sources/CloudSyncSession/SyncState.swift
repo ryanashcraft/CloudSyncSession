@@ -53,31 +53,37 @@ struct SyncState {
             default:
                 state.hasGoodAccountStatus = false
             }
-        case .zoneStatusChanged(let hasCreatedZone):
-            state.hasCreatedZone = hasCreatedZone
-        case .createZoneCompleted:
-            state.hasCreatedZone = true
-        case .modify(let records, let recordIDsToDelete):
-            let operation = ModifyOperation(records: records, recordIDsToDelete: recordIDsToDelete)
+        case .doWork(let work):
+            switch work {
+            case .fetch(let operation):
+                state.fetchQueue.append(operation)
+            case .modify(let operation):
+                state.modifyQueue.append(operation)
+            case .createZone(let operation):
+                state.createZoneQueue.append(operation)
+            }
+        case .workSuccess(let result):
+            switch result {
+            case .fetch(let response):
+                if !state.fetchQueue.isEmpty {
+                    state.fetchQueue.removeFirst()
+                }
 
-            state.modifyQueue.append(operation)
+                if response.hasMore {
+                    state.fetchQueue = [FetchOperation(changeToken: response.changeToken)] + state.fetchQueue
+                }
+            case .modify(_):
+                if !state.modifyQueue.isEmpty {
+                    state.modifyQueue.removeFirst()
+                }
+            case .createZone(let didCreateZone):
+                state.hasCreatedZone = didCreateZone
+            }
         case .resolveConflict(let records, let recordIDsToDelete):
             let operation = ModifyOperation(records: records, recordIDsToDelete: recordIDsToDelete)
 
             if !state.modifyQueue.isEmpty {
                 state.modifyQueue[0] = operation
-            }
-        case .modifyCompleted:
-            if !state.modifyQueue.isEmpty {
-                state.modifyQueue.removeFirst()
-            }
-        case let .fetchCompleted(response):
-            if !state.fetchQueue.isEmpty {
-                state.fetchQueue.removeFirst()
-            }
-
-            if response.hasMore {
-                state.fetchQueue = [FetchOperation(changeToken: response.changeToken)] + state.fetchQueue
             }
         case .halt:
             state.hasHalted = true

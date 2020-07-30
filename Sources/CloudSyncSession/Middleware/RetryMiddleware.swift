@@ -20,13 +20,21 @@ struct RetryMiddleware: Middleware {
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
-        case let .retry(error, work):
+        case let .retry(error, work, suggestedInterval):
             let currentRetryCount = work.retryCount
 
             if currentRetryCount + 1 > maxRetryCount {
                 session.dispatch(event: .workFailure(error, work))
             } else {
-                dispatchQueue.asyncAfter(deadline: .now() + getRetryTimeInterval(retryCount: work.retryCount)) {
+                let retryInterval: TimeInterval
+
+                if let suggestedInterval = suggestedInterval {
+                    retryInterval = suggestedInterval
+                } else {
+                    retryInterval = getRetryTimeInterval(retryCount: work.retryCount)
+                }
+
+                dispatchQueue.asyncAfter(deadline: .now() + retryInterval) {
                     session.dispatch(event: event)
                 }
             }

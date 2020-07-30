@@ -15,7 +15,7 @@ struct ErrorMiddleware: Middleware {
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
         case .workFailure(let error, let work):
-            if let event = mapErrorToEvent(error: error, work: work) {
+            if let event = mapErrorToEvent(error: error, work: work, zoneIdentifier: session.zoneIdentifier) {
                 return next(event)
             }
 
@@ -25,7 +25,7 @@ struct ErrorMiddleware: Middleware {
         }
     }
 
-    func mapErrorToEvent(error: Error, work: SyncWork) -> SyncEvent? {
+    func mapErrorToEvent(error: Error, work: SyncWork, zoneIdentifier: CKRecordZone.ID) -> SyncEvent? {
         if let ckError = error as? CKError {
             switch ckError.code {
             case .notAuthenticated,
@@ -51,7 +51,13 @@ struct ErrorMiddleware: Middleware {
                  .requestRateLimited,
                  .serverResponseLost,
                  .changeTokenExpired:
-                return .retry(error, work)
+                var suggestedInterval: TimeInterval?
+
+                if let retryAfter = ckError.userInfo[CKErrorRetryAfterKey] as? NSNumber {
+                    suggestedInterval = TimeInterval(retryAfter.doubleValue)
+                }
+
+                return .retry(error, work, suggestedInterval)
             case .partialFailure:
                 guard case let .modify(operation) = work else {
                     return .halt
@@ -103,11 +109,11 @@ struct ErrorMiddleware: Middleware {
 
                 return .resolveConflict(allResolvedRecordsToSave, failedRecordIDsToDelete)
             case .serverRecordChanged:
-                return .conflict
+                return .handleConflict
             case .limitExceeded:
-                return .splitThenRetry
+                return .splitThenRetry(error, work)
             case .zoneNotFound, .userDeletedZone:
-                return .createZone
+                return .doWork(.createZone(CreateZoneOperation(zoneIdentifier: zoneIdentifier)))
             case .assetNotAvailable,
                  .assetFileNotFound,
                  .assetFileModified,

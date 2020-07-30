@@ -5,6 +5,7 @@ public class CloudSyncSession {
     @PublishedAfter var state: SyncState = SyncState()
 
     let operationHandler: OperationHandler
+    let zoneIdentifier: CKRecordZone.ID
 
     private var middlewares = [AnyMiddleware]()
 
@@ -14,8 +15,9 @@ public class CloudSyncSession {
 
     var dispatchQueue = DispatchQueue(label: "CloudSyncSession.Dispatch", qos: .userInitiated)
 
-    public init(operationHandler: OperationHandler) {
+    public init(operationHandler: OperationHandler, zoneIdentifier: CKRecordZone.ID) {
         self.operationHandler = operationHandler
+        self.zoneIdentifier = zoneIdentifier
 
         self.middlewares = [
             ErrorMiddleware(session: self).eraseToAnyMiddleware(),

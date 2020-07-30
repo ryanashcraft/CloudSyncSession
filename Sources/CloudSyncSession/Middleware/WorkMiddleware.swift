@@ -22,7 +22,7 @@ struct WorkMiddleware: Middleware {
                     case let .failure(error):
                         session.dispatch(event: .workFailure(error, work))
                     case let .success(response):
-                        session.dispatch(event: .fetchCompleted(response))
+                        session.dispatch(event: .workSuccess(.fetch(response)))
                     }
                 }
             case .modify(let operation):
@@ -31,7 +31,7 @@ struct WorkMiddleware: Middleware {
                     case let .failure(error):
                         session.dispatch(event: .workFailure(error, work))
                     case let .success(response):
-                        session.dispatch(event: .modifyCompleted(response))
+                        session.dispatch(event: .workSuccess(.modify(response)))
                     }
                 }
             case .createZone(let operation):
@@ -40,7 +40,7 @@ struct WorkMiddleware: Middleware {
                     case let .failure(error):
                         session.dispatch(event: .workFailure(error, work))
                     case let .success(hasCreatedZone):
-                        session.dispatch(event: .zoneStatusChanged(hasCreatedZone))
+                        session.dispatch(event: .workSuccess(.createZone(hasCreatedZone)))
                     }
                 }
             }

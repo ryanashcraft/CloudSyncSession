@@ -1,6 +1,12 @@
 import CloudKit
 
 public enum SyncWork: Equatable {
+    public enum Result {
+        case modify(ModifyOperation.Response)
+        case fetch(FetchOperation.Response)
+        case createZone(Bool)
+    }
+
     case modify(ModifyOperation)
     case fetch(FetchOperation)
     case createZone(CreateZoneOperation)
