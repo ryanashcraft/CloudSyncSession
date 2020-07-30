@@ -10,13 +10,12 @@ struct SyncState {
     var createZoneQueue = [CreateZoneOperation]()
     var hasGoodAccountStatus: Bool? = nil
     var hasCreatedZone: Bool? = nil
-    var isPaused: Bool = false
     var hasHalted: Bool = false
 
-    var operationMode: OperationMode = .modify
+    var operationMode: OperationMode?
 
     var isRunning: Bool {
-        (hasGoodAccountStatus ?? false) && (hasCreatedZone ?? false) && !hasHalted && !isPaused
+        (hasGoodAccountStatus ?? false) && (hasCreatedZone ?? false) && !hasHalted
     }
 
     var currentWork: SyncWork? {
@@ -25,6 +24,8 @@ struct SyncState {
         }
 
         switch operationMode {
+        case nil:
+            return nil
         case .modify:
             if let operation = modifyQueue.first {
                 return SyncWork.modify(operation)
@@ -42,6 +43,25 @@ struct SyncState {
         return nil
     }
 
+    mutating func updateOperationMode() {
+        let eligibleOperationModes: [OperationMode?] = [.createZone, .modify, .fetch, nil].filter { mode in
+            switch mode {
+            case .createZone:
+                return !createZoneQueue.isEmpty
+            case .fetch:
+                return !fetchQueue.isEmpty
+            case .modify:
+                return !modifyQueue.isEmpty
+            case nil:
+                return true
+            }
+        }
+
+        if !eligibleOperationModes.contains(operationMode) {
+            operationMode = eligibleOperationModes.first ?? nil
+        }
+    }
+
     func reduce(event: SyncEvent) -> SyncState {
         var state = self
 
@@ -57,11 +77,40 @@ struct SyncState {
             switch work {
             case .fetch(let operation):
                 state.fetchQueue.append(operation)
+
+                if state.currentWork == nil {
+                    state.operationMode = .fetch
+                }
             case .modify(let operation):
                 state.modifyQueue.append(operation)
+
+                if state.currentWork == nil {
+                    state.operationMode = .modify
+                }
             case .createZone(let operation):
                 state.createZoneQueue.append(operation)
+
+                if state.currentWork == nil {
+                    state.operationMode = .createZone
+                }
             }
+
+            state.updateOperationMode()
+        case let .workFailure(_, work):
+            switch work {
+            case .fetch:
+                if !state.fetchQueue.isEmpty {
+                    state.fetchQueue.removeFirst()
+                }
+            case .modify:
+                if !state.modifyQueue.isEmpty {
+                    state.modifyQueue.removeFirst()
+                }
+            case .createZone:
+                state.hasCreatedZone = false
+            }
+
+            state.updateOperationMode()
         case .workSuccess(let result):
             switch result {
             case .fetch(let response):
@@ -79,6 +128,8 @@ struct SyncState {
             case .createZone(let didCreateZone):
                 state.hasCreatedZone = didCreateZone
             }
+
+            state.updateOperationMode()
         case .resolveConflict(let records, let recordIDsToDelete):
             let operation = ModifyOperation(records: records, recordIDsToDelete: recordIDsToDelete)
 
@@ -87,9 +138,10 @@ struct SyncState {
             }
         case .halt:
             state.hasHalted = true
-        case .retry:
-            state.isPaused = true
-        default:
+        case .start,
+             .handleConflict,
+             .retry,
+             .splitThenRetry:
             break
         }
 

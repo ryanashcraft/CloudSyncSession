@@ -122,7 +122,7 @@ struct ErrorMiddleware: Middleware {
                  .tooManyParticipants,
                  .unknownItem,
                  .operationCancelled:
-                return nil
+                return .halt
             @unknown default:
                 return nil
             }

@@ -21,6 +21,7 @@ public class CloudSyncSession {
 
         self.middlewares = [
             ErrorMiddleware(session: self).eraseToAnyMiddleware(),
+            RetryMiddleware(session: self).eraseToAnyMiddleware(),
             WorkMiddleware(session: self).eraseToAnyMiddleware(),
             CallbackMiddleware(session: self).eraseToAnyMiddleware(),
             LoggerMiddleware(session: self).eraseToAnyMiddleware(),
