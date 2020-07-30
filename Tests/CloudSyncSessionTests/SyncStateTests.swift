@@ -28,7 +28,8 @@ final class SyncStateTests: XCTestCase {
         var state = SyncState()
 
         state = state.reduce(event: .accountStatusChanged(.available))
-        state = state.reduce(event: .workSuccess(.createZone(true)))
+        let createZoneWork = SyncWork.createZone(CreateZoneOperation(zoneIdentifier: testZoneID))
+        state = state.reduce(event: .workSuccess(.createZone(true), createZoneWork))
         state = state.reduce(event: .doWork(.modify(ModifyOperation(records: [], recordIDsToDelete: []))))
 
         XCTAssertNotNil(state.currentWork)
@@ -43,7 +44,8 @@ final class SyncStateTests: XCTestCase {
         state = state.reduce(event: .doWork(.modify(ModifyOperation(records: [], recordIDsToDelete: []))))
 
         state = state.reduce(event: .accountStatusChanged(.available))
-        state = state.reduce(event: .workSuccess(.createZone(true)))
+        let createZoneWork = SyncWork.createZone(CreateZoneOperation(zoneIdentifier: testZoneID))
+        state = state.reduce(event: .workSuccess(.createZone(true), createZoneWork))
 
         XCTAssertEqual(state.operationMode, SyncState.OperationMode.modify)
 
@@ -61,7 +63,8 @@ final class SyncStateTests: XCTestCase {
         state = state.reduce(event: .doWork(.fetch(FetchOperation(changeToken: nil))))
 
         state = state.reduce(event: .accountStatusChanged(.available))
-        state = state.reduce(event: .workSuccess(.createZone(true)))
+        let createZoneWork = SyncWork.createZone(CreateZoneOperation(zoneIdentifier: testZoneID))
+        state = state.reduce(event: .workSuccess(.createZone(true), createZoneWork))
 
         XCTAssertEqual(state.operationMode, SyncState.OperationMode.fetch)
 
@@ -76,11 +79,13 @@ final class SyncStateTests: XCTestCase {
     func testOperationModeResetsAfterAllWorkSuccess() {
         var state = SyncState()
 
-        state = state.reduce(event: .doWork(.modify(ModifyOperation(records: [], recordIDsToDelete: []))))
-        state = state.reduce(event: .workSuccess(.modify(ModifyOperation.Response(savedRecords: [], deletedRecordIDs: []))))
+        let modifyWork = SyncWork.modify(ModifyOperation(records: [], recordIDsToDelete: []))
+        state = state.reduce(event: .doWork(modifyWork))
+        state = state.reduce(event: .workSuccess(.modify(ModifyOperation.Response(savedRecords: [], deletedRecordIDs: [])), modifyWork))
 
         state = state.reduce(event: .accountStatusChanged(.available))
-        state = state.reduce(event: .workSuccess(.createZone(true)))
+        let createZoneWork = SyncWork.createZone(CreateZoneOperation(zoneIdentifier: testZoneID))
+        state = state.reduce(event: .workSuccess(.createZone(true), createZoneWork))
 
         XCTAssertNil(state.operationMode)
         XCTAssertNil(state.currentWork)
@@ -91,11 +96,13 @@ final class SyncStateTests: XCTestCase {
 
         state = state.reduce(event: .doWork(.fetch(FetchOperation(changeToken: nil))))
 
-        state = state.reduce(event: .doWork(.modify(ModifyOperation(records: [], recordIDsToDelete: []))))
-        state = state.reduce(event: .workSuccess(.modify(ModifyOperation.Response(savedRecords: [], deletedRecordIDs: []))))
+        let modifyWork = SyncWork.modify(ModifyOperation(records: [], recordIDsToDelete: []))
+        state = state.reduce(event: .doWork(modifyWork))
+        state = state.reduce(event: .workSuccess(.modify(ModifyOperation.Response(savedRecords: [], deletedRecordIDs: [])), modifyWork))
 
         state = state.reduce(event: .accountStatusChanged(.available))
-        state = state.reduce(event: .workSuccess(.createZone(true)))
+        let createZoneWork = SyncWork.createZone(CreateZoneOperation(zoneIdentifier: testZoneID))
+        state = state.reduce(event: .workSuccess(.createZone(true), createZoneWork))
 
         XCTAssertEqual(state.operationMode, SyncState.OperationMode.fetch)
 

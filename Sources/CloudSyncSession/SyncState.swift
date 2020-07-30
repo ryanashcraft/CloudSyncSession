@@ -57,8 +57,30 @@ struct SyncState {
             }
         }
 
-        if !eligibleOperationModes.contains(operationMode) {
+        if operationMode == nil || !eligibleOperationModes.contains(operationMode) {
             operationMode = eligibleOperationModes.first ?? nil
+        }
+    }
+
+    mutating func pushWork(_ work: SyncWork) {
+        switch work {
+        case .fetch(let operation):
+            fetchQueue.append(operation)
+        case .modify(let operation):
+            modifyQueue.append(operation)
+        case .createZone(let operation):
+            createZoneQueue.append(operation)
+        }
+    }
+
+    mutating func popWork(work: SyncWork) {
+        switch work {
+        case let .fetch(operation):
+            fetchQueue = fetchQueue.filter { $0 != operation }
+        case let .modify(operation):
+            modifyQueue = modifyQueue.filter { $0 != operation }
+        case let .createZone(operation):
+            createZoneQueue = createZoneQueue.filter { $0 != operation }
         }
     }
 
@@ -73,69 +95,37 @@ struct SyncState {
             default:
                 state.hasGoodAccountStatus = false
             }
+        case .retryWork(let work):
+            state.popWork(work: work)
+            state.pushWork(work.retried)
+
+            fallthrough
         case .doWork(let work):
-            switch work {
-            case .fetch(let operation):
-                state.fetchQueue.append(operation)
-
-                if state.currentWork == nil {
-                    state.operationMode = .fetch
-                }
-            case .modify(let operation):
-                state.modifyQueue.append(operation)
-
-                if state.currentWork == nil {
-                    state.operationMode = .modify
-                }
-            case .createZone(let operation):
-                state.createZoneQueue.append(operation)
-
-                if state.currentWork == nil {
-                    state.operationMode = .createZone
-                }
-            }
-
+            state.pushWork(work)
             state.updateOperationMode()
-        case let .workFailure(_, work):
-            switch work {
-            case .fetch:
-                if !state.fetchQueue.isEmpty {
-                    state.fetchQueue.removeFirst()
-                }
-            case .modify:
-                if !state.modifyQueue.isEmpty {
-                    state.modifyQueue.removeFirst()
-                }
-            case .createZone:
-                state.hasCreatedZone = false
-            }
-
+        case .workFailure(_, let work):
+            state.popWork(work: work)
             state.updateOperationMode()
-        case .workSuccess(let result):
+        case .workSuccess(let result, let work):
+            state.popWork(work: work)
+
             switch result {
             case .fetch(let response):
-                if !state.fetchQueue.isEmpty {
-                    state.fetchQueue.removeFirst()
-                }
-
                 if response.hasMore {
                     state.fetchQueue = [FetchOperation(changeToken: response.changeToken)] + state.fetchQueue
                 }
-            case .modify(_):
-                if !state.modifyQueue.isEmpty {
-                    state.modifyQueue.removeFirst()
-                }
             case .createZone(let didCreateZone):
                 state.hasCreatedZone = didCreateZone
+            default:
+                break
             }
 
             state.updateOperationMode()
-        case .resolveConflict(let records, let recordIDsToDelete):
+        case let .resolveConflict(work, records, recordIDsToDelete):
             let operation = ModifyOperation(records: records, recordIDsToDelete: recordIDsToDelete)
 
-            if !state.modifyQueue.isEmpty {
-                state.modifyQueue[0] = operation
-            }
+            state.popWork(work: work)
+            state.pushWork(.modify(operation))
         case .halt:
             state.hasHalted = true
         case .start,

@@ -107,7 +107,7 @@ struct ErrorMiddleware: Middleware {
                     return nil
                 }
 
-                return .resolveConflict(allResolvedRecordsToSave, failedRecordIDsToDelete)
+                return .resolveConflict(work, allResolvedRecordsToSave, failedRecordIDsToDelete)
             case .serverRecordChanged:
                 return .handleConflict
             case .limitExceeded:

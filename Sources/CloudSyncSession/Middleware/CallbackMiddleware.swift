@@ -3,7 +3,7 @@ struct CallbackMiddleware: Middleware {
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
-        case .workSuccess(let result):
+        case .workSuccess(let result, _):
             switch result {
             case .fetch(let response):
                 session.onFetchCompleted?(response.changeToken, response.changedRecords, response.deletedRecordIDs)

@@ -21,6 +21,23 @@ public enum SyncWork: Equatable {
             return operation.retryCount
         }
     }
+
+    var retried: SyncWork {
+        switch self {
+        case .modify(var operation):
+            operation.retryCount += 1
+
+            return .modify(operation)
+        case .fetch(var operation):
+            operation.retryCount += 1
+
+            return .fetch(operation)
+        case .createZone(var operation):
+            operation.retryCount += 1
+
+            return .createZone(operation)
+        }
+    }
 }
 
 protocol SyncOperation {

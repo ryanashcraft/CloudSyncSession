@@ -7,11 +7,12 @@ public enum SyncEvent {
     case accountStatusChanged(CKAccountStatus)
 
     case doWork(SyncWork)
+    case retryWork(SyncWork)
     case workFailure(Error, SyncWork)
-    case workSuccess(SyncWork.Result)
+    case workSuccess(SyncWork.Result, SyncWork)
 
     case handleConflict
-    case resolveConflict([CKRecord], [CKRecord.ID])
+    case resolveConflict(SyncWork, [CKRecord], [CKRecord.ID])
 
     case retry(Error, SyncWork, TimeInterval?)
     case splitThenRetry(Error, SyncWork)
@@ -26,6 +27,8 @@ public enum SyncEvent {
             return "account status changed: \(status)"
         case .doWork:
             return "do work"
+        case .retryWork:
+            return "retry work"
         case .workFailure:
             return "work failure"
         case .workSuccess:
@@ -36,7 +39,7 @@ public enum SyncEvent {
             return "split then retry"
         case .handleConflict:
             return "conflict"
-        case .resolveConflict(let records, let recordIDsToDelete):
+        case .resolveConflict(_, let records, let recordIDsToDelete):
             return "resolved \(records.count) records with \(recordIDsToDelete.count) deleted"
         }
     }

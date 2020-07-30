@@ -35,7 +35,7 @@ struct RetryMiddleware: Middleware {
                 }
 
                 dispatchQueue.asyncAfter(deadline: .now() + retryInterval) {
-                    session.dispatch(event: event)
+                    session.dispatch(event: .retryWork(work))
                 }
             }
 
