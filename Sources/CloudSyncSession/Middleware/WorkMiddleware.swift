@@ -6,16 +6,7 @@ struct WorkMiddleware: Middleware {
         let event = next(event)
         let newState = session.state
 
-        let isWorkEvent: Bool = {
-            switch event {
-            case .modify, .resolveConflict, .clearChangeToken, .fetch:
-                return true
-            default:
-                return false
-            }
-        }()
-
-        if isWorkEvent || (!prevState.isRunning && newState.isRunning) {
+        if prevState.currentWork != newState.currentWork {
             work()
         }
 
@@ -29,7 +20,7 @@ struct WorkMiddleware: Middleware {
                 session.operationHandler.handle(fetchOperation: operation) { result in
                     switch result {
                     case let .failure(error):
-                        session.dispatch(event: .fetchFailure(error, operation))
+                        session.dispatch(event: .workFailure(error, work))
                     case let .success(response):
                         session.dispatch(event: .fetchCompleted(response))
                     }
@@ -38,7 +29,7 @@ struct WorkMiddleware: Middleware {
                 session.operationHandler.handle(modifyOperation: operation) { result in
                     switch result {
                     case let .failure(error):
-                        session.dispatch(event: .modifyFailure(error, operation))
+                        session.dispatch(event: .workFailure(error, work))
                     case let .success(response):
                         session.dispatch(event: .modifyCompleted(response))
                     }
@@ -47,7 +38,7 @@ struct WorkMiddleware: Middleware {
                 session.operationHandler.handle(createZoneOperation: operation) { result in
                     switch result {
                     case let .failure(error):
-                        session.dispatch(event: .createZoneFailure(error, operation))
+                        session.dispatch(event: .workFailure(error, work))
                     case let .success(hasCreatedZone):
                         session.dispatch(event: .zoneStatusChanged(hasCreatedZone))
                     }

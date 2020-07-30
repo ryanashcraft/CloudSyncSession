@@ -93,7 +93,7 @@ final class CloudSyncSessionTests: XCTestCase {
             expectation.fulfill()
         }
 
-        session.dispatch(event: .modify([testRecord]))
+        session.dispatch(event: .modify([testRecord], []))
 
         wait(for: [expectation], timeout: 1)
     }
@@ -118,7 +118,7 @@ final class CloudSyncSessionTests: XCTestCase {
             }
             .store(in: &tasks)
 
-        session.dispatch(event: .modify([testRecord]))
+        session.dispatch(event: .modify([testRecord], []))
 
         wait(for: [expectation], timeout: 1)
     }
@@ -135,7 +135,7 @@ final class CloudSyncSessionTests: XCTestCase {
             expectation.fulfill()
         }
 
-        session.dispatch(event: .modify([testRecord]))
+        session.dispatch(event: .modify([testRecord], []))
 
         wait(for: [expectation], timeout: 1)
     }
@@ -160,7 +160,7 @@ final class CloudSyncSessionTests: XCTestCase {
             }
             .store(in: &tasks)
 
-        session.dispatch(event: .modify([testRecord]))
+        session.dispatch(event: .modify([testRecord], []))
 
         wait(for: [expectation], timeout: 1)
     }
@@ -178,7 +178,7 @@ final class CloudSyncSessionTests: XCTestCase {
             expectation.fulfill()
         }
 
-        session.dispatch(event: .modify([testRecord]))
+        session.dispatch(event: .modify([testRecord], []))
         session.dispatch(event: .accountStatusChanged(.available))
 
         wait(for: [expectation], timeout: 1)
@@ -203,7 +203,7 @@ final class CloudSyncSessionTests: XCTestCase {
             }
             .store(in: &tasks)
 
-        session.dispatch(event: .modify([testRecord]))
+        session.dispatch(event: .modify([testRecord], []))
 
         wait(for: [expectation], timeout: 1)
     }

@@ -1,8 +1,11 @@
 import CloudKit
+import Foundation
 import os.log
 
 struct ErrorMiddleware: Middleware {
     var session: CloudSyncSession
+
+    private let dispatchQueue = DispatchQueue(label: "ErrorMiddleware.Dispatch")
 
     private let log = OSLog(
         subsystem: "com.algebraiclabs.CloudSyncSession",
@@ -11,14 +14,8 @@ struct ErrorMiddleware: Middleware {
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
-        case .fetchFailure(let error, _):
-            if let event = mapErrorToEvent(error: error) {
-                return next(event)
-            }
-
-            return next(event)
-        case .modifyFailure(let error, let operation):
-            if let event = mapErrorToEvent(error: error, operation: operation) {
+        case .workFailure(let error, let work):
+            if let event = mapErrorToEvent(error: error, work: work) {
                 return next(event)
             }
 
@@ -28,7 +25,7 @@ struct ErrorMiddleware: Middleware {
         }
     }
 
-    func mapErrorToEvent(error: Error) -> SyncEvent? {
+    func mapErrorToEvent(error: Error, work: SyncWork) -> SyncEvent? {
         if let ckError = error as? CKError {
             switch ckError.code {
             case .notAuthenticated,
@@ -44,47 +41,22 @@ struct ErrorMiddleware: Middleware {
                  .invalidArguments,
                  .serverRejectedRequest,
                  .resultsTruncated,
-                 .batchRequestFailed:
+                 .batchRequestFailed,
+                 .internalError:
                 return .halt
-            case .internalError,
-                 .networkUnavailable,
+            case .networkUnavailable,
                  .networkFailure,
                  .serviceUnavailable,
                  .zoneBusy,
-                 .requestRateLimited:
-                return .backoff
-            case .serverResponseLost,
+                 .requestRateLimited,
+                 .serverResponseLost,
                  .changeTokenExpired:
-                return .retry
+                return .retry(error, work)
             case .partialFailure:
-                return nil
-            case .serverRecordChanged:
-                return .conflict
-            case .limitExceeded:
-                return .splitThenRetry
-            case .zoneNotFound, .userDeletedZone:
-                return .createZone
-            case .assetNotAvailable,
-                 .assetFileNotFound,
-                 .assetFileModified,
-                 .participantMayNeedVerification,
-                 .alreadyShared,
-                 .tooManyParticipants,
-                 .unknownItem,
-                 .operationCancelled:
-                return nil
-            @unknown default:
-                return nil
-            }
-        } else {
-            return .halt
-        }
-    }
+                guard case let .modify(operation) = work else {
+                    return .halt
+                }
 
-    func mapErrorToEvent(error: Error, operation: ModifyOperation) -> SyncEvent? {
-        if let ckError = error as? CKError {
-            switch ckError.code {
-            case .partialFailure:
                 guard let partialErrors = ckError.userInfo[CKPartialErrorsByItemIDKey] as? [CKRecord.ID: Error] else {
                     return .halt
                 }
@@ -120,7 +92,8 @@ struct ErrorMiddleware: Middleware {
                     !resolvedConflictsToSave.map { $0.recordID }.contains(record.recordID)
                         && batchRequestFailedRecordIDs.contains(record.recordID)
                 }
-                //                    let failedRecordIDsToDelete = recordIDsToDelete.filter(recordIDsNotSavedOrDeleted.contains)
+
+                let failedRecordIDsToDelete = operation.recordIDsToDelete.filter(recordIDsNotSavedOrDeleted.contains)
 
                 let allResolvedRecordsToSave = batchRequestRecordsToSave + resolvedConflictsToSave
 
@@ -128,15 +101,28 @@ struct ErrorMiddleware: Middleware {
                     return nil
                 }
 
-                return .resolveConflict(allResolvedRecordsToSave)
-            default:
-                if let error = mapErrorToEvent(error: error) {
-                    return error
-                }
+                return .resolveConflict(allResolvedRecordsToSave, failedRecordIDsToDelete)
+            case .serverRecordChanged:
+                return .conflict
+            case .limitExceeded:
+                return .splitThenRetry
+            case .zoneNotFound, .userDeletedZone:
+                return .createZone
+            case .assetNotAvailable,
+                 .assetFileNotFound,
+                 .assetFileModified,
+                 .participantMayNeedVerification,
+                 .alreadyShared,
+                 .tooManyParticipants,
+                 .unknownItem,
+                 .operationCancelled:
+                return nil
+            @unknown default:
+                return nil
             }
+        } else {
+            return .halt
         }
-
-        return .halt
     }
 
     func resolveConflict(error: Error) -> CKRecord? {

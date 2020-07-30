@@ -23,7 +23,7 @@ public class CloudKitOperationHandler: OperationHandler {
         os_log("%{public}@", log: log, type: .debug, #function)
 
         let recordsToSave = modifyOperation.records
-        let recordIDsToDelete = [CKRecord.ID]()
+        let recordIDsToDelete = modifyOperation.recordIDsToDelete
 
         guard !recordIDsToDelete.isEmpty || !recordsToSave.isEmpty else {
             completion(.success(ModifyOperation.Response(savedRecords: [], deletedRecordIDs: [])))
@@ -54,12 +54,12 @@ public class CloudKitOperationHandler: OperationHandler {
     public func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
         os_log("%{public}@", log: log, type: .debug, #function)
 
+        var hasMore: Bool = false
+        var token: CKServerChangeToken? = fetchOperation.changeToken
         var changedRecords: [CKRecord] = []
         var deletedRecordIDs: [CKRecord.ID] = []
 
         let operation = CKFetchRecordZoneChangesOperation()
-
-        var token: CKServerChangeToken? = fetchOperation.changeToken
 
         let config = CKFetchRecordZoneChangesOperation.ZoneConfiguration(
             previousServerChangeToken: token,
@@ -94,10 +94,12 @@ public class CloudKitOperationHandler: OperationHandler {
             deletedRecordIDs.append(recordID)
         }
 
-        operation.recordZoneFetchCompletionBlock = { [weak self] _, newToken, _, _, _ in
+        operation.recordZoneFetchCompletionBlock = { [weak self] _, newToken, _, newHasMore, _ in
             guard let self = self else {
                 return
             }
+
+            hasMore = newHasMore
 
             if let newToken = newToken {
                 os_log("Received new change token", log: self.log, type: .debug)
@@ -127,7 +129,16 @@ public class CloudKitOperationHandler: OperationHandler {
             } else {
                 os_log("Finished fetching record zone changes", log: self.log, type: .info)
 
-                completion(.success(FetchOperation.Response(changeToken: token, changedRecords: changedRecords, deletedRecordIDs: deletedRecordIDs)))
+                completion(
+                    .success(
+                        FetchOperation.Response(
+                            changeToken: token,
+                            changedRecords: changedRecords,
+                            deletedRecordIDs: deletedRecordIDs,
+                            hasMore: hasMore
+                        )
+                    )
+                )
             }
         }
 

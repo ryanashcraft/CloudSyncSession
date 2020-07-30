@@ -4,20 +4,17 @@ public enum SyncEvent {
     case start
     case accountStatusChanged(CKAccountStatus)
     case zoneStatusChanged(Bool)
+    case workFailure(Error, SyncWork)
     case fetch(CKServerChangeToken?)
-    case fetchFailure(Error, FetchOperation)
     case fetchCompleted(FetchOperation.Response)
     case clearChangeToken
-    case modify([CKRecord])
-    case modifyFailure(Error, ModifyOperation)
+    case modify([CKRecord], [CKRecord.ID])
     case modifyCompleted(ModifyOperation.Response)
-    case createZoneFailure(Error, CreateZoneOperation)
     case createZoneCompleted
-    case resolveConflict([CKRecord])
+    case resolveConflict([CKRecord], [CKRecord.ID])
     case halt
-    case backoff
     case createZone
-    case retry
+    case retry(Error, SyncWork)
     case splitThenRetry
     case conflict
     case partialFailure
@@ -32,28 +29,22 @@ public enum SyncEvent {
             return "zone status changed: \(isZoneCreated)"
         case .fetch:
             return "fetch"
-        case .fetchFailure:
+        case .workFailure:
             return "fetch failure"
         case let .fetchCompleted(operationResponse):
             return "fetch completed with \(operationResponse.changedRecords.count) saved and \(operationResponse.deletedRecordIDs.count) deleted records"
         case .clearChangeToken:
             return "clear change token"
-        case .modify(let records):
-            return "modify \(records.count) records"
-        case .modifyFailure:
-            return "modify failure"
+        case .modify(let records, let recordIDsToDelete):
+            return "modify \(records.count) and delete \(recordIDsToDelete.count) records"
         case let .modifyCompleted(operationResponse):
             return "saved \(operationResponse.savedRecords.count) and deleted \(operationResponse.deletedRecordIDs.count) records"
-        case .createZoneFailure:
-            return "create zone failure"
         case .createZoneCompleted:
             return "create zone completed"
-        case .resolveConflict(let records):
-            return "resolved \(records.count) records"
+        case .resolveConflict(let records, let recordIDsToDelete):
+            return "resolved \(records.count) records with \(recordIDsToDelete.count) deleted"
         case .halt:
             return "halt"
-        case .backoff:
-            return "backoff"
         case .createZone:
             return "create zone"
         case .retry:
