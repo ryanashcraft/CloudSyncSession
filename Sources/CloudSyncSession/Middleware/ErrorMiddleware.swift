@@ -44,7 +44,6 @@ struct ErrorMiddleware: Middleware {
                  .invalidArguments,
                  .serverRejectedRequest,
                  .resultsTruncated,
-                 .changeTokenExpired,
                  .batchRequestFailed:
                 return .halt
             case .internalError,
@@ -54,7 +53,8 @@ struct ErrorMiddleware: Middleware {
                  .zoneBusy,
                  .requestRateLimited:
                 return .backoff
-            case .serverResponseLost:
+            case .serverResponseLost,
+                 .changeTokenExpired:
                 return .retry
             case .partialFailure:
                 return nil

@@ -6,12 +6,11 @@ public enum SyncEvent {
     case zoneStatusChanged(Bool)
     case fetch(CKServerChangeToken?)
     case fetchFailure(Error, FetchOperation)
-    case fetchCompleted([CKRecord], [CKRecord.ID])
-    case setChangeToken(CKServerChangeToken)
+    case fetchCompleted(FetchOperation.Response)
     case clearChangeToken
     case modify([CKRecord])
     case modifyFailure(Error, ModifyOperation)
-    case modifyCompleted([CKRecord], [CKRecord.ID])
+    case modifyCompleted(ModifyOperation.Response)
     case createZoneFailure(Error, CreateZoneOperation)
     case createZoneCompleted
     case resolveConflict([CKRecord])
@@ -35,18 +34,16 @@ public enum SyncEvent {
             return "fetch"
         case .fetchFailure:
             return "fetch failure"
-        case let .fetchCompleted(savedRecords, deletedRecordIDs):
-            return "fetch completed with \(savedRecords.count) saved and \(deletedRecordIDs.count) deleted records"
-        case .setChangeToken:
-            return "set change token"
+        case let .fetchCompleted(operationResponse):
+            return "fetch completed with \(operationResponse.changedRecords.count) saved and \(operationResponse.deletedRecordIDs.count) deleted records"
         case .clearChangeToken:
             return "clear change token"
         case .modify(let records):
             return "modify \(records.count) records"
         case .modifyFailure:
             return "modify failure"
-        case .modifyCompleted(let records, _):
-            return "modified \(records.count) records"
+        case let .modifyCompleted(operationResponse):
+            return "saved \(operationResponse.savedRecords.count) and deleted \(operationResponse.deletedRecordIDs.count) records"
         case .createZoneFailure:
             return "create zone failure"
         case .createZoneCompleted:

@@ -3,49 +3,49 @@ import XCTest
 @testable import CloudSyncSession
 
 class SuccessfulMockOperationHandler: OperationHandler {
-    func handle(createZoneOperation: CreateZoneOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
 
     }
 
-    func handle(fetchOperation: FetchOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
 
     }
 
-    func handle(modifyOperation: ModifyOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
-            dispatch(.modifyCompleted(modifyOperation.records, []))
+            completion(.success(ModifyOperation.Response(savedRecords: modifyOperation.records, deletedRecordIDs: [])))
         }
     }
 }
 
 class FailingMockOperationHandler: OperationHandler {
-    func handle(createZoneOperation: CreateZoneOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
 
     }
 
-    func handle(fetchOperation: FetchOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
 
     }
 
-    func handle(modifyOperation: ModifyOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
-            dispatch(.modifyFailure(CKError(.notAuthenticated), modifyOperation))
+            completion(.failure(CKError(.notAuthenticated)))
         }
     }
 }
 
 class PartialFailureMockOperationHandler: OperationHandler {
-    func handle(createZoneOperation: CreateZoneOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
 
     }
 
-    func handle(fetchOperation: FetchOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
         
     }
 
-    func handle(modifyOperation: ModifyOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
-            dispatch(.modifyFailure(CKError(.partialFailure), modifyOperation))
+            completion(.failure(CKError(.partialFailure)))
         }
     }
 }
@@ -87,7 +87,7 @@ final class CloudSyncSessionTests: XCTestCase {
         let session = CloudSyncSession(operationHandler: mockOperationHandler)
         session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
 
-        session.onRecordsModified = { records in
+        session.onRecordsModified = { records, _ in
             XCTAssertEqual(records.count, 1)
 
             expectation.fulfill()
@@ -106,7 +106,7 @@ final class CloudSyncSessionTests: XCTestCase {
         let session = CloudSyncSession(operationHandler: mockOperationHandler)
         session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
 
-        session.onRecordsModified = { records in
+        session.onRecordsModified = { records, _ in
             XCTFail()
         }
 
@@ -129,9 +129,9 @@ final class CloudSyncSessionTests: XCTestCase {
 
         let mockOperationHandler = SuccessfulMockOperationHandler()
         let session = CloudSyncSession(operationHandler: mockOperationHandler)
-        session.state = SyncState(hasGoodAccountStatus: true, hasHalted: true, hasCreatedZone: true)
+        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true, hasHalted: true)
 
-        session.onRecordsModified = { records in
+        session.onRecordsModified = { records, _ in
             expectation.fulfill()
         }
 
@@ -172,7 +172,7 @@ final class CloudSyncSessionTests: XCTestCase {
         let session = CloudSyncSession(operationHandler: mockOperationHandler)
         session.state = SyncState(hasGoodAccountStatus: false, hasCreatedZone: true)
 
-        session.onRecordsModified = { records in
+        session.onRecordsModified = { records, _ in
             XCTAssertEqual(records.count, 1)
 
             expectation.fulfill()

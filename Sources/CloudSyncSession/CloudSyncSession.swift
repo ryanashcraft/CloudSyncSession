@@ -1,28 +1,56 @@
 import CloudKit
 import os.log
 
-public enum SyncWork {
-    case push(ModifyOperation)
-    case pull(FetchOperation)
+enum SyncWork {
+    case modify(ModifyOperation)
+    case fetch(FetchOperation)
     case createZone(CreateZoneOperation)
 }
 
 typealias Dispatch = (SyncEvent) -> Void
 
 struct SyncState {
-    var workQueue = [SyncWork]()
+    enum OperationMode {
+        case modify
+        case fetch
+        case createZone
+    }
+
+    var modifyQueue = [ModifyOperation]()
+    var fetchQueue = [FetchOperation]()
+    var createZoneQueue = [CreateZoneOperation]()
     var hasGoodAccountStatus: Bool? = nil
     var hasCreatedZone: Bool? = nil
-    var isPaued: Bool = false
+    var isPaused: Bool = false
     var hasHalted: Bool = false
-    var changeToken: CKServerChangeToken?
+
+    var operationMode: OperationMode = .modify
 
     var isRunning: Bool {
-        (hasGoodAccountStatus ?? false) && (hasCreatedZone ?? false) && !hasHalted
+        (hasGoodAccountStatus ?? false) && (hasCreatedZone ?? false) && !hasHalted && !isPaused
     }
 
     var currentWork: SyncWork? {
-        isRunning ? workQueue.first : nil
+        guard isRunning else {
+            return nil
+        }
+
+        switch operationMode {
+        case .modify:
+            if let operation = modifyQueue.first {
+                return SyncWork.modify(operation)
+            }
+        case .fetch:
+            if let operation = fetchQueue.first {
+                return SyncWork.fetch(operation)
+            }
+        case .createZone:
+            if let operation = createZoneQueue.first {
+                return SyncWork.createZone(operation)
+            }
+        }
+
+        return nil
     }
 
     func reduce(event: SyncEvent) -> SyncState {
@@ -41,23 +69,27 @@ struct SyncState {
         case .createZoneCompleted:
             state.hasCreatedZone = true
         case .modify(let records):
-            let work = SyncWork.push(ModifyOperation(records: records))
+            let operation = ModifyOperation(records: records)
 
-            state.workQueue.append(work)
+            state.modifyQueue.append(operation)
         case .resolveConflict(let records):
-            let work = SyncWork.push(ModifyOperation(records: records))
+            let operation = ModifyOperation(records: records)
 
-            if !state.workQueue.isEmpty {
-                state.workQueue[0] = work
+            if !state.modifyQueue.isEmpty {
+                state.modifyQueue[0] = operation
             }
-        case .fetchCompleted, .modifyCompleted:
-            if !state.workQueue.isEmpty {
-                state.workQueue.removeFirst()
+        case .modifyCompleted:
+            if !state.modifyQueue.isEmpty {
+                state.modifyQueue.removeFirst()
+            }
+        case .fetchCompleted:
+            if !state.fetchQueue.isEmpty {
+                state.fetchQueue.removeFirst()
             }
         case .halt:
             state.hasHalted = true
-        case .setChangeToken(let changeToken):
-            state.changeToken = changeToken
+        case .retry:
+            state.isPaused = true
         default:
             break
         }
@@ -73,9 +105,8 @@ public class CloudSyncSession {
 
     private var middlewares = [AnyMiddleware]()
 
-    public var onRecordsModified: (([CKRecord]) -> Void)?
-    public var onChangeTokenChanged: ((CKServerChangeToken?) -> Void)?
-
+    public var onRecordsModified: (([CKRecord], [CKRecord.ID]) -> Void)?
+    public var onFetchCompleted: ((CKServerChangeToken?, [CKRecord], [CKRecord.ID]) -> Void)?
     public var resolveConflict: ((CKRecord, CKRecord) -> CKRecord?)?
 
     var dispatchQueue = DispatchQueue(label: "CloudSyncSession.Dispatch", qos: .userInitiated)

@@ -3,11 +3,10 @@ struct CallbackMiddleware: Middleware {
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
-        case .modifyCompleted(let records, let deletedIDs):
-            session.onRecordsModified?(records)
-        case .fetchCompleted(let records, let deletedIDs):
-            session.onRecordsModified?(records)
-            session.onChangeTokenChanged?(session.state.changeToken)
+        case .modifyCompleted(let response):
+            session.onRecordsModified?(response.savedRecords, response.deletedRecordIDs)
+        case .fetchCompleted(let response):
+            session.onFetchCompleted?(response.changeToken, response.changedRecords, response.deletedRecordIDs)
         default:
             break
         }

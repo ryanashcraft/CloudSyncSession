@@ -2,7 +2,7 @@ import CloudKit
 
 public struct FetchOperation {
     public struct Response {
-        let changeToken: CKServerChangeToken
+        let changeToken: CKServerChangeToken?
         let changedRecords: [CKRecord]
         let deletedRecordIDs: [CKRecord.ID]
     }
@@ -15,6 +15,11 @@ public struct FetchOperation {
 }
 
 public struct ModifyOperation {
+    public struct Response {
+        let savedRecords: [CKRecord]
+        let deletedRecordIDs: [CKRecord.ID]
+    }
+
     var records: [CKRecord]
 
     init(records: [CKRecord]) {
@@ -31,7 +36,7 @@ public struct CreateZoneOperation {
 }
 
 public protocol OperationHandler {
-    func handle(fetchOperation: FetchOperation, dispatch: @escaping (SyncEvent) -> Void)
-    func handle(modifyOperation: ModifyOperation, dispatch: @escaping (SyncEvent) -> Void)
-    func handle(createZoneOperation: CreateZoneOperation, dispatch: @escaping (SyncEvent) -> Void)
+    func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void)
+    func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void)
+    func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void)
 }

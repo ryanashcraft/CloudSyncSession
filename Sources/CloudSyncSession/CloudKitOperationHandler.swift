@@ -18,7 +18,7 @@ public class CloudKitOperationHandler: OperationHandler {
 
     public func handle(
         modifyOperation: ModifyOperation,
-        dispatch: @escaping (SyncEvent) -> Void
+        completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void
     ) {
         os_log("%{public}@", log: log, type: .debug, #function)
 
@@ -26,7 +26,7 @@ public class CloudKitOperationHandler: OperationHandler {
         let recordIDsToDelete = [CKRecord.ID]()
 
         guard !recordIDsToDelete.isEmpty || !recordsToSave.isEmpty else {
-            dispatch(.modifyCompleted([], []))
+            completion(.success(ModifyOperation.Response(savedRecords: [], deletedRecordIDs: [])))
 
             return
         }
@@ -38,9 +38,9 @@ public class CloudKitOperationHandler: OperationHandler {
 
         operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
             if let error = error {
-                dispatch(.modifyFailure(error, modifyOperation))
+                completion(.failure(error))
             } else {
-                dispatch(.modifyCompleted(serverRecords ?? [], deletedRecordIDs ?? []))
+                completion(.success(ModifyOperation.Response(savedRecords: serverRecords ?? [], deletedRecordIDs: deletedRecordIDs ?? [])))
             }
         }
 
@@ -51,7 +51,7 @@ public class CloudKitOperationHandler: OperationHandler {
         operationQueue.addOperation(operation)
     }
 
-    public func handle(fetchOperation: FetchOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    public func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
         os_log("%{public}@", log: log, type: .debug, #function)
 
         var changedRecords: [CKRecord] = []
@@ -59,7 +59,7 @@ public class CloudKitOperationHandler: OperationHandler {
 
         let operation = CKFetchRecordZoneChangesOperation()
 
-        let token: CKServerChangeToken? = fetchOperation.changeToken
+        var token: CKServerChangeToken? = fetchOperation.changeToken
 
         let config = CKFetchRecordZoneChangesOperation.ZoneConfiguration(
             previousServerChangeToken: token,
@@ -72,54 +72,18 @@ public class CloudKitOperationHandler: OperationHandler {
         operation.recordZoneIDs = [zoneIdentifier]
         operation.fetchAllChanges = true
 
-        // Called if the record zone fetch was not fully completed
-        operation.recordZoneChangeTokensUpdatedBlock = { [weak self] _, changeToken, _ in
-            guard let self = self else { return }
-
-            guard let changeToken = changeToken else { return }
-
-            // The fetch may have failed halfway through, so we need to save the change token,
-            // emit the current records, and then clear the arrays so we can re-request for the
-            // rest of the data.
-            os_log("Commiting new change token and dispatching changes", log: self.log, type: .debug)
-            dispatch(.fetchCompleted(changedRecords, deletedRecordIDs))
-            dispatch(.setChangeToken(changeToken))
-            changedRecords = []
-            deletedRecordIDs = []
-        }
-
-        // Called after the record zone fetch completes
-        operation.recordZoneFetchCompletionBlock = { [weak self] _, token, _, _, error in
-            guard let self = self else { return }
-
-            if let error = error as? CKError {
-                os_log(
-                    "Failed to fetch record zone changes: %{public}@",
-                    log: self.log,
-                    type: .error,
-                    String(describing: error)
-                )
-
-                if error.code == .changeTokenExpired {
-                    os_log(
-                        "Change token expired, resetting token and trying again",
-                        log: self.log,
-                        type: .error
-                    )
-
-                    dispatch(.clearChangeToken)
-                } else {
-                    dispatch(.fetchFailure(error, fetchOperation))
-                }
-            } else {
-                if let token = token {
-                    os_log("Commiting new change token", log: self.log, type: .debug)
-
-                    dispatch(.setChangeToken(token))
-                } else {
-                    os_log("Confusingly received nil token", log: self.log, type: .debug)
-                }
+        operation.recordZoneChangeTokensUpdatedBlock = { [weak self] _, newToken, _ in
+            guard let self = self else {
+                return
             }
+
+            guard let newToken = newToken else {
+                return
+            }
+
+            os_log("Received new change token", log: self.log, type: .debug)
+
+            token = newToken
         }
 
         operation.recordChangedBlock = { record in
@@ -130,8 +94,26 @@ public class CloudKitOperationHandler: OperationHandler {
             deletedRecordIDs.append(recordID)
         }
 
+        operation.recordZoneFetchCompletionBlock = { [weak self] _, newToken, _, _, _ in
+            guard let self = self else {
+                return
+            }
+
+            if let newToken = newToken {
+                os_log("Received new change token", log: self.log, type: .debug)
+
+                token = newToken
+            } else {
+                os_log("Confusingly received nil token", log: self.log, type: .debug)
+
+                token = nil
+            }
+        }
+
         operation.fetchRecordZoneChangesCompletionBlock = { [weak self] error in
-            guard let self = self else { return }
+            guard let self = self else {
+                return
+            }
 
             if let error = error {
                 os_log(
@@ -141,13 +123,11 @@ public class CloudKitOperationHandler: OperationHandler {
                     String(describing: error)
                 )
 
-                dispatch(.fetchFailure(error, fetchOperation))
+                completion(.failure(error))
             } else {
                 os_log("Finished fetching record zone changes", log: self.log, type: .info)
 
-                dispatch(.fetchCompleted(changedRecords, deletedRecordIDs))
-                changedRecords = []
-                deletedRecordIDs = []
+                completion(.success(FetchOperation.Response(changeToken: token, changedRecords: changedRecords, deletedRecordIDs: deletedRecordIDs)))
             }
         }
 
@@ -157,17 +137,13 @@ public class CloudKitOperationHandler: OperationHandler {
         operationQueue.addOperation(operation)
     }
 
-    public func handle(createZoneOperation: CreateZoneOperation, dispatch: @escaping (SyncEvent) -> Void) {
+    public func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
         self.checkCustomZone(zoneIdentifier: createZoneOperation.zoneIdentifier) { result in
             switch result {
             case let .failure(error):
-                dispatch(.createZoneFailure(error, createZoneOperation))
+                completion(.failure(error))
             case let .success(hasCreatedZone):
-                if hasCreatedZone {
-                    dispatch(.zoneStatusChanged(true))
-                } else {
-                    // CREATE ZONE
-                }
+                completion(.success(hasCreatedZone))
             }
         }
     }
