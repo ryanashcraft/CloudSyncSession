@@ -153,8 +153,21 @@ public class CloudKitOperationHandler: OperationHandler {
             switch result {
             case let .failure(error):
                 completion(.failure(error))
-            case let .success(hasCreatedZone):
-                completion(.success(hasCreatedZone))
+            case let .success(isZoneAlreadyCreated):
+                if isZoneAlreadyCreated {
+                    completion(.success(true))
+
+                    return
+                }
+
+                self.createCustomZone(zoneIdentifier: self.zoneIdentifier) { result in
+                    switch result {
+                    case let .failure(error):
+                        completion(.failure(error))
+                    case let .success(didCreateZone):
+                        completion(.success(didCreateZone))
+                    }
+                }
             }
         }
     }
@@ -180,15 +193,53 @@ public class CloudKitOperationHandler: OperationHandler {
                 )
 
                 completion(.success(false))
-            } else {
+
+                return
+            }
+
+            os_log(
+                "Custom zone exists",
+                log: self.log,
+                type: .error
+            )
+
+            completion(.success(true))
+        }
+
+        operation.qualityOfService = .userInitiated
+        operation.database = database
+
+        operationQueue.addOperation(operation)
+    }
+
+    private func createCustomZone(zoneIdentifier: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
+        let zone = CKRecordZone(zoneID: zoneIdentifier)
+        let operation = CKModifyRecordZonesOperation(
+            recordZonesToSave: [zone],
+            recordZoneIDsToDelete: nil
+        )
+
+        operation.modifyRecordZonesCompletionBlock = { _, _, error in
+            if let error = error {
                 os_log(
-                    "Custom zone exists",
+                    "Failed to check for custom zone existence: %{public}@",
                     log: self.log,
-                    type: .error
+                    type: .error,
+                    String(describing: error)
                 )
 
-                completion(.success(true))
+                completion(.failure(error))
+
+                return
             }
+
+            os_log(
+                "Created custom zone",
+                log: self.log,
+                type: .error
+            )
+
+            completion(.success(true))
         }
 
         operation.qualityOfService = .userInitiated

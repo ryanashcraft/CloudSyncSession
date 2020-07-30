@@ -25,6 +25,7 @@ public class CloudSyncSession {
             WorkMiddleware(session: self).eraseToAnyMiddleware(),
             CallbackMiddleware(session: self).eraseToAnyMiddleware(),
             LoggerMiddleware(session: self).eraseToAnyMiddleware(),
+            ZoneMiddleware(session: self).eraseToAnyMiddleware(),
         ]
     }
 

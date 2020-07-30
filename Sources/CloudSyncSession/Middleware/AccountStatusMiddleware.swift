@@ -1,7 +1,7 @@
 import CloudKit
 import os.log
 
-public struct CloudKitAccountStatusMiddleware: Middleware {
+public struct AccountStatusMiddleware: Middleware {
     public var session: CloudSyncSession
     let ckContainer: CKContainer
 
@@ -18,12 +18,14 @@ public struct CloudKitAccountStatusMiddleware: Middleware {
     public func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
         case .start:
-            ckContainer.accountStatus { status, error in
-                if let error = error {
-                    os_log("Failed to fetch account status: %{public}@", log: self.log, type: .error, String(describing: error))
-                }
+            if session.state.hasGoodAccountStatus == nil {
+                ckContainer.accountStatus { status, error in
+                    if let error = error {
+                        os_log("Failed to fetch account status: %{public}@", log: self.log, type: .error, String(describing: error))
+                    }
 
-                self.session.dispatch(event: .accountStatusChanged(status))
+                    self.session.dispatch(event: .accountStatusChanged(status))
+                }
             }
         default:
             break
