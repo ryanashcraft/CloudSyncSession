@@ -38,6 +38,17 @@ public enum SyncWork: Equatable {
             return .createZone(operation)
         }
     }
+
+    var debugDescription: String {
+        switch self {
+        case .modify(let operation):
+            return "modify with \(operation.records.count) records to save and \(operation.recordIDsToDelete.count) to delete"
+        case .fetch:
+            return "fetch"
+        case .createZone:
+            return "create zone"
+        }
+    }
 }
 
 protocol SyncOperation {
@@ -55,7 +66,7 @@ public struct FetchOperation: Equatable {
     var changeToken: CKServerChangeToken?
     var retryCount: Int = 0
 
-    init(changeToken: CKServerChangeToken?) {
+    public init(changeToken: CKServerChangeToken?) {
         self.changeToken = changeToken
     }
 }
@@ -70,7 +81,7 @@ public struct ModifyOperation: Equatable, SyncOperation {
     var recordIDsToDelete: [CKRecord.ID]
     var retryCount: Int = 0
 
-    init(records: [CKRecord], recordIDsToDelete: [CKRecord.ID]) {
+    public init(records: [CKRecord], recordIDsToDelete: [CKRecord.ID]) {
         self.records = records
         self.recordIDsToDelete = recordIDsToDelete
     }
@@ -80,7 +91,7 @@ public struct CreateZoneOperation: Equatable {
     var zoneIdentifier: CKRecordZone.ID
     var retryCount: Int = 0
 
-    init(zoneIdentifier: CKRecordZone.ID) {
+    public init(zoneIdentifier: CKRecordZone.ID) {
         self.zoneIdentifier = zoneIdentifier
     }
 }

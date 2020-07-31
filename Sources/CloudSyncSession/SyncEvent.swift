@@ -8,39 +8,39 @@ public enum SyncEvent {
 
     case doWork(SyncWork)
     case retryWork(SyncWork)
-    case workFailure(Error, SyncWork)
-    case workSuccess(SyncWork.Result, SyncWork)
+    case workFailure(SyncWork, Error)
+    case workSuccess(SyncWork, SyncWork.Result)
 
     case handleConflict
     case resolveConflict(SyncWork, [CKRecord], [CKRecord.ID])
 
-    case retry(Error, SyncWork, TimeInterval?)
-    case splitThenRetry(Error, SyncWork)
+    case retry(SyncWork, Error, TimeInterval?)
+    case splitThenRetry(SyncWork, Error)
 
     var logDescription: String {
         switch self {
         case .start:
-            return "start"
+            return "Start"
         case .halt:
-            return "halt"
+            return "Halt"
         case .accountStatusChanged(let status):
-            return "account status changed: \(status)"
-        case .doWork:
-            return "do work"
-        case .retryWork:
-            return "retry work"
-        case .workFailure:
-            return "work failure"
-        case .workSuccess:
-            return "work success"
+            return "Account status changed: \(status)"
+        case let .doWork(work):
+            return "Do work: \(work.debugDescription)"
+        case let .retryWork(work):
+            return "Retry work: \(work.debugDescription)"
+        case let .workFailure(work, _):
+            return "Work failure: \(work.debugDescription)"
+        case let .workSuccess(work, _):
+            return "Work success: \(work.debugDescription)"
         case .retry:
-            return "retry"
+            return "Retry"
         case .splitThenRetry:
-            return "split then retry"
+            return "Split then retry"
         case .handleConflict:
-            return "conflict"
+            return "Conflict"
         case .resolveConflict(_, let records, let recordIDsToDelete):
-            return "resolved \(records.count) records with \(recordIDsToDelete.count) deleted"
+            return "Resolved \(records.count) records with \(recordIDsToDelete.count) deleted"
         }
     }
 }

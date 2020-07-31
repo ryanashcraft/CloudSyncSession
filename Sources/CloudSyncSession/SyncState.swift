@@ -103,10 +103,10 @@ struct SyncState {
         case .doWork(let work):
             state.pushWork(work)
             state.updateOperationMode()
-        case .workFailure(_, let work):
+        case .workFailure(let work, _):
             state.popWork(work: work)
             state.updateOperationMode()
-        case .workSuccess(let result, let work):
+        case .workSuccess(let work, let result):
             state.popWork(work: work)
 
             switch result {

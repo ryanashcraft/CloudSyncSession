@@ -14,7 +14,7 @@ struct ErrorMiddleware: Middleware {
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
-        case .workFailure(let error, let work):
+        case .workFailure(let work, let error):
             if let event = mapErrorToEvent(error: error, work: work, zoneIdentifier: session.zoneIdentifier) {
                 return next(event)
             }
@@ -57,7 +57,7 @@ struct ErrorMiddleware: Middleware {
                     suggestedInterval = TimeInterval(retryAfter.doubleValue)
                 }
 
-                return .retry(error, work, suggestedInterval)
+                return .retry(work, error, suggestedInterval)
             case .partialFailure:
                 guard case let .modify(operation) = work else {
                     return .halt
@@ -111,7 +111,7 @@ struct ErrorMiddleware: Middleware {
             case .serverRecordChanged:
                 return .handleConflict
             case .limitExceeded:
-                return .splitThenRetry(error, work)
+                return .splitThenRetry(work, error)
             case .zoneNotFound, .userDeletedZone:
                 return .doWork(.createZone(CreateZoneOperation(zoneIdentifier: zoneIdentifier)))
             case .assetNotAvailable,
