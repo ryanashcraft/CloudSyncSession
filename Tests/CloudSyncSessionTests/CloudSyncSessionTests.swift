@@ -110,7 +110,7 @@ final class CloudSyncSessionTests: XCTestCase {
 
         session.dispatch(event: .accountStatusChanged(.available))
         let createZoneWork = SyncWork.createZone(CreateZoneOperation(zoneIdentifier: testZoneID))
-        session.dispatch(event: .workSuccess(.createZone(true), createZoneWork))
+        session.dispatch(event: .workSuccess(createZoneWork, .createZone(true)))
 
         session.$state
             .sink { newState in

@@ -85,6 +85,19 @@ public struct ModifyOperation: Equatable, SyncOperation {
         self.records = records
         self.recordIDsToDelete = recordIDsToDelete
     }
+
+    var split: [ModifyOperation] {
+        let firstHalfRecords = Array(records[0 ..< records.count / 2])
+        let secondHalfRecords = Array(records[records.count / 2 ..< records.count])
+
+        let firstHalfDeletedRecordIDs = Array(recordIDsToDelete[0 ..< recordIDsToDelete.count / 2])
+        let secondHalfDeletedRecordIDs = Array(recordIDsToDelete[recordIDsToDelete.count / 2 ..< recordIDsToDelete.count])
+
+        return [
+            ModifyOperation(records: firstHalfRecords, recordIDsToDelete: firstHalfDeletedRecordIDs),
+            ModifyOperation(records: secondHalfRecords, recordIDsToDelete: secondHalfDeletedRecordIDs),
+        ]
+    }
 }
 
 public struct CreateZoneOperation: Equatable {

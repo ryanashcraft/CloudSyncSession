@@ -5,7 +5,7 @@ import os.log
 struct ErrorMiddleware: Middleware {
     var session: CloudSyncSession
 
-    private let dispatchQueue = DispatchQueue(label: "ErrorMiddleware.Dispatch")
+    private let dispatchQueue = DispatchQueue(label: "ErrorMiddleware.Dispatch", qos: .userInitiated)
 
     private let log = OSLog(
         subsystem: "com.algebraiclabs.CloudSyncSession",
@@ -111,7 +111,7 @@ struct ErrorMiddleware: Middleware {
             case .serverRecordChanged:
                 return .handleConflict
             case .limitExceeded:
-                return .splitThenRetry(work, error)
+                return .split(work, error)
             case .zoneNotFound, .userDeletedZone:
                 return .doWork(.createZone(CreateZoneOperation(zoneIdentifier: zoneIdentifier)))
             case .assetNotAvailable,

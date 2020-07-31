@@ -15,7 +15,7 @@ public enum SyncEvent {
     case resolveConflict(SyncWork, [CKRecord], [CKRecord.ID])
 
     case retry(SyncWork, Error, TimeInterval?)
-    case splitThenRetry(SyncWork, Error)
+    case split(SyncWork, Error)
 
     var logDescription: String {
         switch self {
@@ -35,8 +35,8 @@ public enum SyncEvent {
             return "Work success: \(work.debugDescription)"
         case .retry:
             return "Retry"
-        case .splitThenRetry:
-            return "Split then retry"
+        case let .split(work, _):
+            return "Split work: \(work.debugDescription)"
         case .handleConflict:
             return "Conflict"
         case .resolveConflict(_, let records, let recordIDsToDelete):

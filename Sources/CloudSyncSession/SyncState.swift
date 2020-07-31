@@ -77,6 +77,17 @@ struct SyncState {
         }
     }
 
+    mutating func prioritizeWork(_ work: SyncWork) {
+        switch work {
+        case .fetch(let operation):
+            fetchQueue = [operation] + fetchQueue
+        case .modify(let operation):
+            modifyQueue = [operation] + modifyQueue
+        case .createZone(let operation):
+            createZoneQueue = [operation] + createZoneQueue
+        }
+    }
+
     mutating func popWork(work: SyncWork) {
         switch work {
         case let .fetch(operation):
@@ -102,10 +113,22 @@ struct SyncState {
         case .retryWork(let work):
             state.popWork(work: work)
             state.pushWork(work.retried)
-
-            fallthrough
+            state.updateOperationMode()
         case .doWork(let work):
             state.pushWork(work)
+            state.updateOperationMode()
+        case .split(let work, _):
+            state.popWork(work: work)
+
+            switch work {
+            case let .modify(operation):
+                for splitOperation in operation.split.reversed() {
+                    state.prioritizeWork(.modify(splitOperation))
+                }
+            default:
+                state.hasHalted = true
+            }
+
             state.updateOperationMode()
         case .workFailure(let work, _):
             state.popWork(work: work)
@@ -116,7 +139,7 @@ struct SyncState {
             switch result {
             case .fetch(let response):
                 if response.hasMore {
-                    state.fetchQueue = [FetchOperation(changeToken: response.changeToken)] + state.fetchQueue
+                    state.prioritizeWork(.fetch(FetchOperation(changeToken: response.changeToken)))
                 }
             case .createZone(let didCreateZone):
                 state.hasCreatedZone = didCreateZone
@@ -134,8 +157,8 @@ struct SyncState {
             state.hasHalted = true
         case .start,
              .handleConflict,
-             .retry,
-             .splitThenRetry:
+             .retry:
+            // Events only used by middleware with no direct impact on state
             break
         }
 

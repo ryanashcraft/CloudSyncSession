@@ -11,7 +11,7 @@ private func getRetryTimeInterval(retryCount: Int) -> TimeInterval {
 struct RetryMiddleware: Middleware {
     var session: CloudSyncSession
 
-    private let dispatchQueue = DispatchQueue(label: "ErrorMiddleware.Dispatch")
+    private let dispatchQueue = DispatchQueue(label: "ErrorMiddleware.Dispatch", qos: .userInitiated)
 
     private let log = OSLog(
         subsystem: "com.algebraiclabs.CloudSyncSession",
