@@ -152,6 +152,26 @@ public class CloudKitOperationHandler: OperationHandler {
         self.checkCustomZone(zoneIdentifier: createZoneOperation.zoneIdentifier) { result in
             switch result {
             case let .failure(error):
+                if let ckError = error as? CKError {
+                    switch ckError.code {
+                    case .partialFailure,
+                         .zoneNotFound,
+                         .userDeletedZone:
+                        self.createCustomZone(zoneIdentifier: self.zoneIdentifier) { result in
+                            switch result {
+                            case let .failure(error):
+                                completion(.failure(error))
+                            case let .success(didCreateZone):
+                                completion(.success(didCreateZone))
+                            }
+                        }
+
+                        return
+                    default:
+                        break
+                    }
+                }
+
                 completion(.failure(error))
             case let .success(isZoneAlreadyCreated):
                 if isZoneAlreadyCreated {
@@ -185,6 +205,8 @@ public class CloudKitOperationHandler: OperationHandler {
                 )
 
                 completion(.failure(error))
+
+                return
             } else if (ids ?? [:]).isEmpty {
                 os_log(
                     "Custom zone reported as existing, but it doesn't exist",
