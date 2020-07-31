@@ -10,16 +10,24 @@ struct SyncState {
     var createZoneQueue = [CreateZoneOperation]()
     var hasGoodAccountStatus: Bool? = nil
     var hasCreatedZone: Bool? = nil
-    var hasHalted: Bool = false
+    var isHalted: Bool = false
 
     var operationMode: OperationMode?
 
     var isRunning: Bool {
-        if !createZoneQueue.isEmpty {
-            return true
+        if isHalted {
+            return false
         }
 
-        return (hasGoodAccountStatus ?? false) && (hasCreatedZone ?? false) && !hasHalted
+        if !(hasGoodAccountStatus ?? false) {
+            return false
+        }
+
+        if createZoneQueue.isEmpty, !(hasCreatedZone ?? false) {
+            return false
+        }
+
+        return true
     }
 
     var currentWork: SyncWork? {
@@ -126,7 +134,7 @@ struct SyncState {
                     state.prioritizeWork(.modify(splitOperation))
                 }
             default:
-                state.hasHalted = true
+                state.isHalted = true
             }
 
             state.updateOperationMode()
@@ -154,7 +162,7 @@ struct SyncState {
             state.popWork(work: work)
             state.pushWork(.modify(operation))
         case .halt:
-            state.hasHalted = true
+            state.isHalted = true
         case .start,
              .handleConflict,
              .retry:

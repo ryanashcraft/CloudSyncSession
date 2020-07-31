@@ -1,12 +1,5 @@
-import os.log
-
 public struct ZoneMiddleware: Middleware {
     public var session: CloudSyncSession
-
-    private let log = OSLog(
-        subsystem: "com.algebraiclabs.CloudSyncSession",
-        category: "zone status middleware"
-    )
 
     public init(session: CloudSyncSession) {
         self.session = session

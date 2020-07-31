@@ -13,7 +13,7 @@ struct SplittingMiddleware: Middleware {
                         session.dispatch(event: .doWork(.modify(splitOperation)))
                     }
 
-                    return .noop
+                    return next(.noop)
                 }
             default:
                 break

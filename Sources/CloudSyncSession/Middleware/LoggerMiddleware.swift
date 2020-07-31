@@ -5,7 +5,7 @@ struct LoggerMiddleware: Middleware {
 
     var log = OSLog(
         subsystem: "com.algebraiclabs.CloudSyncSession",
-        category: "cloud sync event"
+        category: "Sync Event"
     )
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {

@@ -93,13 +93,15 @@ private var testZoneID = CKRecordZone.ID(
     ownerName: CKCurrentUserDefaultName
 )
 
-private var testRecord = CKRecord(
-    recordType: "Test",
-    recordID: CKRecord.ID(recordName: testIdentifier)
-)
+func makeTestRecord() -> CKRecord {
+    return CKRecord(
+        recordType: "Test",
+        recordID: CKRecord.ID(recordName: UUID().uuidString)
+    )
+}
 
 final class CloudSyncSessionTests: XCTestCase {
-    func testUnhaltsAfterAccountAvailableAndZoneCreated() {
+    func testRunsAfterAccountAvailableAndZoneCreated() {
         var tasks = Set<AnyCancellable>()
         let expectation = self.expectation(description: "work")
         let mockOperationHandler = SuccessfulMockOperationHandler()
@@ -139,7 +141,7 @@ final class CloudSyncSessionTests: XCTestCase {
             expectation.fulfill()
         }
 
-        let operation = ModifyOperation(records: [testRecord], recordIDsToDelete: [])
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
         session.dispatch(event: .doWork(.modify(operation)))
 
         wait(for: [expectation], timeout: 1)
@@ -168,7 +170,7 @@ final class CloudSyncSessionTests: XCTestCase {
             }
             .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [testRecord], recordIDsToDelete: [])
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
         session.dispatch(event: .doWork(.modify(operation)))
 
         wait(for: [expectation], timeout: 1)
@@ -183,13 +185,13 @@ final class CloudSyncSessionTests: XCTestCase {
             operationHandler: mockOperationHandler,
             zoneIdentifier: testZoneID
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true, hasHalted: true)
+        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true, isHalted: true)
 
         session.onRecordsModified = { records, _ in
             expectation.fulfill()
         }
 
-        let operation = ModifyOperation(records: [testRecord], recordIDsToDelete: [])
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
         session.dispatch(event: .doWork(.modify(operation)))
 
         wait(for: [expectation], timeout: 1)
@@ -210,7 +212,7 @@ final class CloudSyncSessionTests: XCTestCase {
         session.$state
             .receive(on: DispatchQueue.main)
             .sink { newState in
-                if newState.hasHalted {
+                if newState.isHalted {
                     session.dispatch(event: .accountStatusChanged(.available))
                     XCTAssertFalse(session.state.isRunning)
                     expectation.fulfill()
@@ -218,7 +220,7 @@ final class CloudSyncSessionTests: XCTestCase {
             }
             .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [testRecord], recordIDsToDelete: [])
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
         session.dispatch(event: .doWork(.modify(operation)))
 
         wait(for: [expectation], timeout: 1)
@@ -240,7 +242,7 @@ final class CloudSyncSessionTests: XCTestCase {
             expectation.fulfill()
         }
 
-        let operation = ModifyOperation(records: [testRecord], recordIDsToDelete: [])
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
         session.dispatch(event: .doWork(.modify(operation)))
         session.dispatch(event: .accountStatusChanged(.available))
 
@@ -263,13 +265,13 @@ final class CloudSyncSessionTests: XCTestCase {
         session.$state
             .receive(on: DispatchQueue.main)
             .sink { newState in
-                if newState.hasHalted {
+                if newState.isHalted {
                     expectation.fulfill()
                 }
             }
             .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [testRecord], recordIDsToDelete: [])
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
         session.dispatch(event: .doWork(.modify(operation)))
 
         wait(for: [expectation], timeout: 1)
@@ -291,9 +293,67 @@ final class CloudSyncSessionTests: XCTestCase {
             expectation.fulfill()
         }
 
-        let operation = ModifyOperation(records: [testRecord], recordIDsToDelete: [])
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
         session.dispatch(event: .doWork(.modify(operation)))
 
-        wait(for: [expectation], timeout: 5)
+        wait(for: [expectation], timeout: 1)
+    }
+
+    func testSplitsLargeWork() {
+        let expectation = self.expectation(description: "work")
+
+        let mockOperationHandler = SuccessfulMockOperationHandler()
+        let session = CloudSyncSession(
+            operationHandler: mockOperationHandler,
+            zoneIdentifier: testZoneID
+        )
+        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+
+        var timesCalled = 0
+
+        session.onRecordsModified = { records, _ in
+            timesCalled += 1
+
+            XCTAssertEqual(records.count, 400)
+
+            if timesCalled >= 2 {
+                expectation.fulfill()
+            }
+        }
+
+        let records = (0 ..< 800).map { _ in makeTestRecord() }
+        let operation = ModifyOperation(records: records, recordIDsToDelete: [])
+        session.dispatch(event: .doWork(.modify(operation)))
+
+        wait(for: [expectation], timeout: 1)
+    }
+
+    func testSplitsInHalf() {
+        let expectation = self.expectation(description: "work")
+
+        let mockOperationHandler = FailOnceMockOperationHandler(error: CKError(.limitExceeded))
+        let session = CloudSyncSession(
+            operationHandler: mockOperationHandler,
+            zoneIdentifier: testZoneID
+        )
+        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+
+        var timesCalled = 0
+
+        session.onRecordsModified = { records, _ in
+            timesCalled += 1
+
+            XCTAssertEqual(records.count, 50)
+
+            if timesCalled >= 2 {
+                expectation.fulfill()
+            }
+        }
+
+        let records = (0 ..< 100).map { _ in makeTestRecord() }
+        let operation = ModifyOperation(records: records, recordIDsToDelete: [])
+        session.dispatch(event: .doWork(.modify(operation)))
+
+        wait(for: [expectation], timeout: 1)
     }
 }

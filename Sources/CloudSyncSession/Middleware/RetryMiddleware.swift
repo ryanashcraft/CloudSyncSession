@@ -1,6 +1,5 @@
 import CloudKit
 import Foundation
-import os.log
 
 private let maxRetryCount = 5
 
@@ -12,11 +11,6 @@ struct RetryMiddleware: Middleware {
     var session: CloudSyncSession
 
     private let dispatchQueue = DispatchQueue(label: "ErrorMiddleware.Dispatch", qos: .userInitiated)
-
-    private let log = OSLog(
-        subsystem: "com.algebraiclabs.CloudSyncSession",
-        category: "error middleware"
-    )
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {

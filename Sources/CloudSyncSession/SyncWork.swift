@@ -89,7 +89,7 @@ public struct ModifyOperation: Equatable, SyncOperation {
     }
 
     var shouldSplit: Bool {
-        return records.count + recordIDsToDelete.count >= maxRecommendedRecordsPerOperation
+        return records.count + recordIDsToDelete.count > maxRecommendedRecordsPerOperation
     }
 
     var split: [ModifyOperation] {

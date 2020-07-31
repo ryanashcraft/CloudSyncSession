@@ -9,7 +9,7 @@ struct ErrorMiddleware: Middleware {
 
     private let log = OSLog(
         subsystem: "com.algebraiclabs.CloudSyncSession",
-        category: "error middleware"
+        category: "Error Middleware"
     )
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {

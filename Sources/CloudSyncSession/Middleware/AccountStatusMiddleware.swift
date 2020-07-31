@@ -7,7 +7,7 @@ public struct AccountStatusMiddleware: Middleware {
 
     private let log = OSLog(
         subsystem: "com.algebraiclabs.CloudSyncSession",
-        category: "account status middleware"
+        category: "Account Status Middleware"
     )
 
     public init(session: CloudSyncSession, ckContainer: CKContainer) {
