@@ -15,7 +15,11 @@ struct SyncState {
     var operationMode: OperationMode?
 
     var isRunning: Bool {
-        (hasGoodAccountStatus ?? false) && (hasCreatedZone ?? false) && !hasHalted
+        if !createZoneQueue.isEmpty {
+            return true
+        }
+
+        return (hasGoodAccountStatus ?? false) && (hasCreatedZone ?? false) && !hasHalted
     }
 
     var currentWork: SyncWork? {
