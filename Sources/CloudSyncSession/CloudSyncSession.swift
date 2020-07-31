@@ -20,6 +20,7 @@ public class CloudSyncSession {
         self.zoneIdentifier = zoneIdentifier
 
         self.middlewares = [
+            SplittingMiddleware(session: self).eraseToAnyMiddleware(),
             ErrorMiddleware(session: self).eraseToAnyMiddleware(),
             RetryMiddleware(session: self).eraseToAnyMiddleware(),
             WorkMiddleware(session: self).eraseToAnyMiddleware(),

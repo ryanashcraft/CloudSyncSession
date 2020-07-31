@@ -122,7 +122,7 @@ struct SyncState {
 
             switch work {
             case let .modify(operation):
-                for splitOperation in operation.split.reversed() {
+                for splitOperation in operation.splitInHalf.reversed() {
                     state.prioritizeWork(.modify(splitOperation))
                 }
             default:
@@ -159,6 +159,8 @@ struct SyncState {
              .handleConflict,
              .retry:
             // Events only used by middleware with no direct impact on state
+            break
+        case .noop:
             break
         }
 

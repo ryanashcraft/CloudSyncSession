@@ -17,6 +17,8 @@ public enum SyncEvent {
     case retry(SyncWork, Error, TimeInterval?)
     case split(SyncWork, Error)
 
+    case noop
+
     var logDescription: String {
         switch self {
         case .start:
@@ -41,6 +43,8 @@ public enum SyncEvent {
             return "Conflict"
         case .resolveConflict(_, let records, let recordIDsToDelete):
             return "Resolved \(records.count) records with \(recordIDsToDelete.count) deleted"
+        case .noop:
+            return "Noop"
         }
     }
 }

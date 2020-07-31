@@ -1,5 +1,7 @@
 import CloudKit
 
+private let maxRecommendedRecordsPerOperation = 400
+
 public enum SyncWork: Equatable {
     public enum Result {
         case modify(ModifyOperation.Response)
@@ -86,16 +88,28 @@ public struct ModifyOperation: Equatable, SyncOperation {
         self.recordIDsToDelete = recordIDsToDelete
     }
 
+    var shouldSplit: Bool {
+        return records.count + recordIDsToDelete.count >= maxRecommendedRecordsPerOperation
+    }
+
     var split: [ModifyOperation] {
+        let splitRecords: [[CKRecord]] = records.chunked(into: maxRecommendedRecordsPerOperation)
+        let splitRecordIDsToDelete: [[CKRecord.ID]] = recordIDsToDelete.chunked(into: maxRecommendedRecordsPerOperation)
+
+        return splitRecords.map { ModifyOperation(records: $0, recordIDsToDelete: []) } +
+            splitRecordIDsToDelete.map { ModifyOperation(records: [], recordIDsToDelete: $0) }
+    }
+
+    var splitInHalf: [ModifyOperation] {
         let firstHalfRecords = Array(records[0 ..< records.count / 2])
         let secondHalfRecords = Array(records[records.count / 2 ..< records.count])
 
-        let firstHalfDeletedRecordIDs = Array(recordIDsToDelete[0 ..< recordIDsToDelete.count / 2])
-        let secondHalfDeletedRecordIDs = Array(recordIDsToDelete[recordIDsToDelete.count / 2 ..< recordIDsToDelete.count])
+        let firstHalfRecordIDsToDelete = Array(recordIDsToDelete[0 ..< recordIDsToDelete.count / 2])
+        let secondHalfRecordIDsToDelete = Array(recordIDsToDelete[recordIDsToDelete.count / 2 ..< recordIDsToDelete.count])
 
         return [
-            ModifyOperation(records: firstHalfRecords, recordIDsToDelete: firstHalfDeletedRecordIDs),
-            ModifyOperation(records: secondHalfRecords, recordIDsToDelete: secondHalfDeletedRecordIDs),
+            ModifyOperation(records: firstHalfRecords, recordIDsToDelete: firstHalfRecordIDsToDelete),
+            ModifyOperation(records: secondHalfRecords, recordIDsToDelete: secondHalfRecordIDsToDelete),
         ]
     }
 }
@@ -106,5 +120,13 @@ public struct CreateZoneOperation: Equatable {
 
     public init(zoneIdentifier: CKRecordZone.ID) {
         self.zoneIdentifier = zoneIdentifier
+    }
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        return stride(from: 0, to: count, by: size).map {
+            Array(self[$0 ..< Swift.min($0 + size, count)])
+        }
     }
 }
