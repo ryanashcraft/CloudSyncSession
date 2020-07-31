@@ -65,6 +65,8 @@ public struct FetchOperation: Equatable {
         let hasMore: Bool
     }
 
+    let id = UUID()
+
     var changeToken: CKServerChangeToken?
     var retryCount: Int = 0
 
@@ -78,6 +80,8 @@ public struct ModifyOperation: Equatable, SyncOperation {
         let savedRecords: [CKRecord]
         let deletedRecordIDs: [CKRecord.ID]
     }
+
+    let id = UUID()
 
     var records: [CKRecord]
     var recordIDsToDelete: [CKRecord.ID]
@@ -117,6 +121,8 @@ public struct ModifyOperation: Equatable, SyncOperation {
 public struct CreateZoneOperation: Equatable {
     var zoneIdentifier: CKRecordZone.ID
     var retryCount: Int = 0
+
+    let id = UUID()
 
     public init(zoneIdentifier: CKRecordZone.ID) {
         self.zoneIdentifier = zoneIdentifier

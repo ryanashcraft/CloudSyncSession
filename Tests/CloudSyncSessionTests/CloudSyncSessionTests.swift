@@ -3,12 +3,27 @@ import XCTest
 @testable import CloudSyncSession
 
 class SuccessfulMockOperationHandler: OperationHandler {
+    private var operationCount = 0
+
     func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
 
     }
 
     func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
+            self.operationCount += 1
 
+            completion(
+                .success(
+                    FetchOperation.Response(
+                        changeToken: nil,
+                        changedRecords: (0 ..< 400).map { _ in makeTestRecord() },
+                        deletedRecordIDs: [],
+                        hasMore: self.operationCount == 1
+                    )
+                )
+            )
+        }
     }
 
     func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
@@ -353,6 +368,32 @@ final class CloudSyncSessionTests: XCTestCase {
         let records = (0 ..< 100).map { _ in makeTestRecord() }
         let operation = ModifyOperation(records: records, recordIDsToDelete: [])
         session.dispatch(event: .doWork(.modify(operation)))
+
+        wait(for: [expectation], timeout: 1)
+    }
+
+    func testLoadsMore() {
+        let expectation = self.expectation(description: "work")
+
+        let mockOperationHandler = SuccessfulMockOperationHandler()
+        let session = CloudSyncSession(
+            operationHandler: mockOperationHandler,
+            zoneIdentifier: testZoneID
+        )
+        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+
+        var timesCalled = 0
+
+        session.onFetchCompleted = { _, _, _ in
+            timesCalled += 1
+
+            if timesCalled >= 2 {
+                expectation.fulfill()
+            }
+        }
+
+        let operation = FetchOperation(changeToken: nil)
+        session.dispatch(event: .doWork(.fetch(operation)))
 
         wait(for: [expectation], timeout: 1)
     }
