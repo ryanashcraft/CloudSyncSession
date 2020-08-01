@@ -26,7 +26,7 @@ public enum SyncEvent {
         case .halt:
             return "Halt"
         case .accountStatusChanged(let status):
-            return "Account status changed: \(status)"
+            return "Account status changed: \(status.debugDescription)"
         case let .doWork(work):
             return "Do work: \(work.debugDescription)"
         case let .retryWork(work):
@@ -45,6 +45,23 @@ public enum SyncEvent {
             return "Resolved \(records.count) records with \(recordIDsToDelete.count) deleted"
         case .noop:
             return "Noop"
+        }
+    }
+}
+
+private extension CKAccountStatus {
+    var debugDescription: String {
+        switch self {
+        case .available:
+            return "Available"
+        case .couldNotDetermine:
+            return "Could Not Determine"
+        case .noAccount:
+            return "No Account"
+        case .restricted:
+            return "Restricted"
+        @unknown default:
+            return "Unknown"
         }
     }
 }
