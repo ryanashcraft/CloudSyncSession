@@ -21,7 +21,7 @@ struct WorkMiddleware: Middleware {
             }
         }
 
-        return event
+        return next(event)
     }
 
     private func doWork(_ work: SyncWork) {
