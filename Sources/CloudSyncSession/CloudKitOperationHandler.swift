@@ -1,27 +1,95 @@
+//
+// Copyright (c) 2020 Jay Hickey
+// Copyright (c) 2020-present Ryan Ashcraft
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+//
+
 import CloudKit
 import os.log
 
+/// An object that handles all of the key operations (fetch, modify, create zone, and create subscription) using the standard CloudKit APIs.
 public class CloudKitOperationHandler: OperationHandler {
+    static let minThrottleDuration: TimeInterval = 2
+    static let maxThrottleDuration: TimeInterval = 60 * 10
+
     let database: CKDatabase
-    let zoneIdentifier: CKRecordZone.ID
-    let operationQueue: OperationQueue
+    let zoneID: CKRecordZone.ID
+    let subscriptionID: String
     let log: OSLog
     let savePolicy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged
     let qos: QualityOfService = .userInitiated
 
-    public init(database: CKDatabase, zoneIdentifier: CKRecordZone.ID, operationQueue: OperationQueue, log: OSLog) {
+    private let operationQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+
+        return queue
+    }()
+
+    var throttleDuration: TimeInterval {
+        didSet {
+            if throttleDuration > oldValue {
+                os_log(
+                    "Increasing throttle duration from %{public}.0f seconds to %{public}.0f seconds",
+                    log: log,
+                    type: .default,
+                    oldValue,
+                    throttleDuration
+                )
+            } else if throttleDuration < oldValue {
+                os_log(
+                    "Decreasing throttle duration from %{public}.0f seconds to %{public}.0f seconds",
+                    log: log,
+                    type: .default,
+                    oldValue,
+                    throttleDuration
+                )
+            }
+        }
+    }
+
+    var lastOperationTime: DispatchTime?
+
+    public init(database: CKDatabase, zoneID: CKRecordZone.ID, subscriptionID: String, log: OSLog) {
         self.database = database
-        self.zoneIdentifier = zoneIdentifier
-        self.operationQueue = operationQueue
+        self.zoneID = zoneID
+        self.subscriptionID = subscriptionID
         self.log = log
+        throttleDuration = Self.minThrottleDuration
+    }
+
+    private func queueOperation(_ operation: Operation) {
+        let deadline: DispatchTime = (lastOperationTime ?? DispatchTime.now()) + throttleDuration
+
+        DispatchQueue.main.asyncAfter(deadline: deadline) {
+            self.operationQueue.addOperation(operation)
+            self.operationQueue.addOperation {
+                self.lastOperationTime = DispatchTime.now()
+            }
+        }
     }
 
     public func handle(
         modifyOperation: ModifyOperation,
         completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void
     ) {
-        os_log("%{public}@", log: log, type: .debug, #function)
-
         let recordsToSave = modifyOperation.records
         let recordIDsToDelete = modifyOperation.recordIDsToDelete
 
@@ -38,8 +106,16 @@ public class CloudKitOperationHandler: OperationHandler {
 
         operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
             if let error = error {
+                if let ckError = error as? CKError {
+                    // Use the suggested retry delay, or exponentially increase throttle duration if not provided
+                    self.throttleDuration = min(Self.maxThrottleDuration, ckError.retryAfterSeconds ?? (self.throttleDuration * 2))
+                }
+
                 completion(.failure(error))
             } else {
+                // On success, back off of the throttle duration by 66%. Backing off too quickly can result in thrashing.
+                self.throttleDuration = max(Self.minThrottleDuration, self.throttleDuration * 2 / 3)
+
                 completion(.success(ModifyOperation.Response(savedRecords: serverRecords ?? [], deletedRecordIDs: deletedRecordIDs ?? [])))
             }
         }
@@ -48,13 +124,11 @@ public class CloudKitOperationHandler: OperationHandler {
         operation.qualityOfService = qos
         operation.database = database
 
-        operationQueue.addOperation(operation)
+        queueOperation(operation)
     }
 
     public func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
-        os_log("%{public}@", log: log, type: .debug, #function)
-
-        var hasMore: Bool = false
+        var hasMore = false
         var token: CKServerChangeToken? = fetchOperation.changeToken
         var changedRecords: [CKRecord] = []
         var deletedRecordIDs: [CKRecord.ID] = []
@@ -67,9 +141,9 @@ public class CloudKitOperationHandler: OperationHandler {
             desiredKeys: nil
         )
 
-        operation.configurationsByRecordZoneID = [zoneIdentifier: config]
+        operation.configurationsByRecordZoneID = [zoneID: config]
 
-        operation.recordZoneIDs = [zoneIdentifier]
+        operation.recordZoneIDs = [zoneID]
         operation.fetchAllChanges = true
 
         operation.recordZoneChangeTokensUpdatedBlock = { [weak self] _, newToken, _ in
@@ -90,7 +164,7 @@ public class CloudKitOperationHandler: OperationHandler {
             changedRecords.append(record)
         }
 
-        operation.recordWithIDWasDeletedBlock = { recordID, recordType in
+        operation.recordWithIDWasDeletedBlock = { recordID, _ in
             deletedRecordIDs.append(recordID)
         }
 
@@ -125,9 +199,17 @@ public class CloudKitOperationHandler: OperationHandler {
                     String(describing: error)
                 )
 
+                if let ckError = error as? CKError {
+                    // Use the suggested retry delay, or exponentially increase throttle duration if not provided
+                    self.throttleDuration = min(Self.maxThrottleDuration, ckError.retryAfterSeconds ?? (self.throttleDuration * 2))
+                }
+
                 completion(.failure(error))
             } else {
                 os_log("Finished fetching record zone changes", log: self.log, type: .info)
+
+                // On success, back off of the throttle duration by 66%. Backing off too quickly can result in thrashing.
+                self.throttleDuration = max(Self.minThrottleDuration, self.throttleDuration * 2 / 3)
 
                 completion(
                     .success(
@@ -145,11 +227,11 @@ public class CloudKitOperationHandler: OperationHandler {
         operation.qualityOfService = qos
         operation.database = database
 
-        operationQueue.addOperation(operation)
+        queueOperation(operation)
     }
 
     public func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
-        self.checkCustomZone(zoneIdentifier: createZoneOperation.zoneIdentifier) { result in
+        checkCustomZone(zoneID: createZoneOperation.zoneID) { result in
             switch result {
             case let .failure(error):
                 if let ckError = error as? CKError {
@@ -157,7 +239,7 @@ public class CloudKitOperationHandler: OperationHandler {
                     case .partialFailure,
                          .zoneNotFound,
                          .userDeletedZone:
-                        self.createCustomZone(zoneIdentifier: self.zoneIdentifier) { result in
+                        self.createCustomZone(zoneID: self.zoneID) { result in
                             switch result {
                             case let .failure(error):
                                 completion(.failure(error))
@@ -180,7 +262,7 @@ public class CloudKitOperationHandler: OperationHandler {
                     return
                 }
 
-                self.createCustomZone(zoneIdentifier: self.zoneIdentifier) { result in
+                self.createCustomZone(zoneID: self.zoneID) { result in
                     switch result {
                     case let .failure(error):
                         completion(.failure(error))
@@ -192,8 +274,54 @@ public class CloudKitOperationHandler: OperationHandler {
         }
     }
 
-    private func checkCustomZone(zoneIdentifier: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
-        let operation = CKFetchRecordZonesOperation(recordZoneIDs: [zoneIdentifier])
+    public func handle(createSubscriptionOperation _: CreateSubscriptionOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
+        checkSubscription(zoneID: zoneID) { result in
+            switch result {
+            case let .failure(error):
+                if let ckError = error as? CKError {
+                    switch ckError.code {
+                    case .partialFailure,
+                         .zoneNotFound,
+                         .userDeletedZone:
+                        self.createSubscription(zoneID: self.zoneID, subscriptionID: self.subscriptionID) { result in
+                            switch result {
+                            case let .failure(error):
+                                completion(.failure(error))
+                            case let .success(didCreateSubscription):
+                                completion(.success(didCreateSubscription))
+                            }
+                        }
+
+                        return
+                    default:
+                        break
+                    }
+                }
+
+                completion(.failure(error))
+            case let .success(isSubscriptionAlreadyCreated):
+                if isSubscriptionAlreadyCreated {
+                    completion(.success(true))
+
+                    return
+                }
+
+                self.createSubscription(zoneID: self.zoneID, subscriptionID: self.subscriptionID) { result in
+                    switch result {
+                    case let .failure(error):
+                        completion(.failure(error))
+                    case let .success(didCreateZone):
+                        completion(.success(didCreateZone))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private extension CloudKitOperationHandler {
+    func checkCustomZone(zoneID: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
+        let operation = CKFetchRecordZonesOperation(recordZoneIDs: [zoneID])
 
         operation.fetchRecordZonesCompletionBlock = { ids, error in
             if let error = error {
@@ -231,11 +359,11 @@ public class CloudKitOperationHandler: OperationHandler {
         operation.qualityOfService = .userInitiated
         operation.database = database
 
-        operationQueue.addOperation(operation)
+        queueOperation(operation)
     }
 
-    private func createCustomZone(zoneIdentifier: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
-        let zone = CKRecordZone(zoneID: zoneIdentifier)
+    func createCustomZone(zoneID: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
+        let zone = CKRecordZone(zoneID: zoneID)
         let operation = CKModifyRecordZonesOperation(
             recordZonesToSave: [zone],
             recordZoneIDsToDelete: nil
@@ -244,7 +372,7 @@ public class CloudKitOperationHandler: OperationHandler {
         operation.modifyRecordZonesCompletionBlock = { _, _, error in
             if let error = error {
                 os_log(
-                    "Failed to check for custom zone existence: %{public}@",
+                    "Failed to create custom zone: %{public}@",
                     log: self.log,
                     type: .error,
                     String(describing: error)
@@ -255,11 +383,7 @@ public class CloudKitOperationHandler: OperationHandler {
                 return
             }
 
-            os_log(
-                "Created custom zone",
-                log: self.log,
-                type: .error
-            )
+            os_log("Created custom zone", log: self.log, type: .debug)
 
             completion(.success(true))
         }
@@ -267,6 +391,85 @@ public class CloudKitOperationHandler: OperationHandler {
         operation.qualityOfService = .userInitiated
         operation.database = database
 
-        operationQueue.addOperation(operation)
+        queueOperation(operation)
+    }
+
+    func checkSubscription(zoneID _: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
+        let operation = CKFetchSubscriptionsOperation(subscriptionIDs: [subscriptionID])
+
+        operation.fetchSubscriptionCompletionBlock = { ids, error in
+            if let error = error {
+                os_log(
+                    "Failed to check for subscription existence: %{public}@",
+                    log: self.log,
+                    type: .error,
+                    String(describing: error)
+                )
+
+                completion(.failure(error))
+
+                return
+            } else if (ids ?? [:]).isEmpty {
+                os_log(
+                    "Subscription reported as existing, but it doesn't exist",
+                    log: self.log,
+                    type: .error
+                )
+
+                completion(.success(false))
+
+                return
+            }
+
+            os_log("Subscription exists", log: self.log, type: .debug)
+
+            completion(.success(true))
+        }
+
+        operation.qualityOfService = .userInitiated
+        operation.database = database
+
+        queueOperation(operation)
+    }
+
+    func createSubscription(zoneID: CKRecordZone.ID, subscriptionID: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+        let subscription = CKRecordZoneSubscription(
+            zoneID: zoneID,
+            subscriptionID: subscriptionID
+        )
+
+        let notificationInfo = CKSubscription.NotificationInfo()
+        notificationInfo.shouldSendContentAvailable = true
+
+        subscription.notificationInfo = notificationInfo
+
+        let operation = CKModifySubscriptionsOperation(
+            subscriptionsToSave: [subscription],
+            subscriptionIDsToDelete: nil
+        )
+
+        operation.modifySubscriptionsCompletionBlock = { _, _, error in
+            if let error = error {
+                os_log(
+                    "Failed to create subscription: %{public}@",
+                    log: self.log,
+                    type: .error,
+                    String(describing: error)
+                )
+
+                completion(.failure(error))
+
+                return
+            }
+
+            os_log("Created subscription", log: self.log, type: .debug)
+
+            completion(.success(true))
+        }
+
+        operation.qualityOfService = .userInitiated
+        operation.database = database
+
+        queueOperation(operation)
     }
 }

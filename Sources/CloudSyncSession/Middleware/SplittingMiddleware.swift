@@ -5,9 +5,9 @@ struct SplittingMiddleware: Middleware {
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
-        case .doWork(let work):
+        case let .doWork(work):
             switch work {
-            case .modify(let operation):
+            case let .modify(operation):
                 if operation.shouldSplit {
                     for splitOperation in operation.split {
                         session.dispatch(event: .doWork(.modify(splitOperation)))

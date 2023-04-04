@@ -1,11 +1,32 @@
+//
+// Copyright (c) 2020 Jay Hickey
+// Copyright (c) 2020-present Ryan Ashcraft
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+//
+
 import CloudKit
 import Foundation
 import os.log
 
 struct ErrorMiddleware: Middleware {
     var session: CloudSyncSession
-
-    private let dispatchQueue = DispatchQueue(label: "ErrorMiddleware.Dispatch", qos: .userInitiated)
 
     private let log = OSLog(
         subsystem: "com.algebraiclabs.CloudSyncSession",
@@ -14,8 +35,8 @@ struct ErrorMiddleware: Middleware {
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
-        case .workFailure(let work, let error):
-            if let event = mapErrorToEvent(error: error, work: work, zoneIdentifier: session.zoneIdentifier) {
+        case let .workFailure(work, error):
+            if let event = mapErrorToEvent(error: error, work: work, zoneID: session.zoneID) {
                 return next(event)
             }
 
@@ -25,8 +46,16 @@ struct ErrorMiddleware: Middleware {
         }
     }
 
-    func mapErrorToEvent(error: Error, work: SyncWork, zoneIdentifier: CKRecordZone.ID) -> SyncEvent? {
+    func mapErrorToEvent(error: Error, work: SyncWork, zoneID: CKRecordZone.ID) -> SyncEvent? {
         if let ckError = error as? CKError {
+            os_log(
+                "Handling CloudKit error (code %{public}d): %{public}@",
+                log: log,
+                type: .error,
+                ckError.errorCode,
+                ckError.localizedDescription
+            )
+
             switch ckError.code {
             case .notAuthenticated,
                  .managedAccountRestricted,
@@ -43,14 +72,13 @@ struct ErrorMiddleware: Middleware {
                  .resultsTruncated,
                  .batchRequestFailed,
                  .internalError:
-                return .halt
+                return .halt(error)
             case .networkUnavailable,
                  .networkFailure,
                  .serviceUnavailable,
                  .zoneBusy,
                  .requestRateLimited,
-                 .serverResponseLost,
-                 .changeTokenExpired:
+                 .serverResponseLost:
                 var suggestedInterval: TimeInterval?
 
                 if let retryAfter = ckError.userInfo[CKErrorRetryAfterKey] as? NSNumber {
@@ -58,62 +86,150 @@ struct ErrorMiddleware: Middleware {
                 }
 
                 return .retry(work, error, suggestedInterval)
+            case .changeTokenExpired:
+                var suggestedInterval: TimeInterval?
+
+                if let retryAfter = ckError.userInfo[CKErrorRetryAfterKey] as? NSNumber {
+                    suggestedInterval = TimeInterval(retryAfter.doubleValue)
+                }
+
+                switch work {
+                case var .fetch(modifiedOperation):
+                    modifiedOperation.changeToken = resolveExpiredChangeToken()
+
+                    return .retry(.fetch(modifiedOperation), error, suggestedInterval)
+                default:
+                    return .halt(error)
+                }
             case .partialFailure:
-                guard case let .modify(operation) = work else {
-                    return .halt
-                }
+                switch work {
+                case .fetch:
+                    // Supported fetch partial failures: changeTokenExpired
 
-                guard let partialErrors = ckError.userInfo[CKPartialErrorsByItemIDKey] as? [CKRecord.ID: Error] else {
-                    return .halt
-                }
-
-                let recordIDsNotSavedOrDeleted = partialErrors.keys
-
-                let batchRequestFailedRecordIDs = partialErrors.filter({ (_, error) in
-                    if let error = error as? CKError, error.code == .batchRequestFailed {
-                        return true
+                    guard let partialErrors = ckError.partialErrorsByItemID else {
+                        return .halt(error)
                     }
 
-                    return false
-                }).keys
-
-                let serverRecordChangedErrors = partialErrors.filter({ (_, error) in
-                    if let error = error as? CKError, error.code == .serverRecordChanged {
-                        return true
+                    guard let error = partialErrors.first?.value as? CKError, partialErrors.count == 1 else {
+                        return .halt(error)
                     }
 
-                    return false
-                }).values
+                    return mapErrorToEvent(error: error, work: work, zoneID: zoneID)
+                case let .modify(operation):
+                    // Supported modify partial failures: batchRequestFailed and serverRecordChanged
 
-                let resolvedConflictsToSave = serverRecordChangedErrors.compactMap { error in
-                    self.resolveConflict(error: error)
+                    guard let partialErrors = ckError.partialErrorsByItemID as? [CKRecord.ID: Error] else {
+                        return .halt(error)
+                    }
+
+                    let recordIDsNotSavedOrDeleted = Set(partialErrors.keys)
+
+                    let unhandleableErrorsByItemID = partialErrors
+                        .filter { _, error in
+                            guard let error = error as? CKError else {
+                                return true
+                            }
+
+                            switch error.code {
+                            case .batchRequestFailed, .serverRecordChanged, .unknownItem:
+                                return false
+                            default:
+                                return true
+                            }
+                        }
+
+                    if !unhandleableErrorsByItemID.isEmpty {
+                        // Abort due to unknown error
+                        return .halt(error)
+                    }
+
+                    // All IDs for records that are unknown by the container (probably deleted by another client)
+                    let unknownItemRecordIDs = Set(
+                        partialErrors
+                            .filter { _, error in
+                                if let error = error as? CKError, error.code == .unknownItem {
+                                    return true
+                                }
+
+                                return false
+                            }
+                            .keys
+                    )
+
+                    // All IDs for records that failed to be modified due to some other error in the batch modify operation
+                    let batchRequestFailedRecordIDs = Set(
+                        partialErrors
+                            .filter { _, error in
+                                if let error = error as? CKError, error.code == .batchRequestFailed {
+                                    return true
+                                }
+
+                                return false
+                            }
+                            .keys
+                    )
+
+                    // All errors for records that failed because there was a conflict
+                    let serverRecordChangedErrors = partialErrors
+                        .filter { _, error in
+                            if let error = error as? CKError, error.code == .serverRecordChanged {
+                                return true
+                            }
+
+                            return false
+                        }
+                        .values
+
+                    // Resolved records
+                    let resolvedConflictsToSave = serverRecordChangedErrors
+                        .compactMap { error in
+                            self.resolveConflict(error: error)
+                        }
+
+                    if resolvedConflictsToSave.count != serverRecordChangedErrors.count {
+                        // Abort if couldn't handle conflict for some reason
+                        os_log(
+                            "Aborting since count of resolved records not equal to number of server record changed errors",
+                            log: log,
+                            type: .error
+                        )
+
+                        return .halt(error)
+                    }
+
+                    let recordsToSaveWithoutUnknowns = operation.records
+                        .filter { recordIDsNotSavedOrDeleted.contains($0.recordID) }
+                        .filter { !unknownItemRecordIDs.contains($0.recordID) }
+
+                    let recordIDsToDeleteWithoutUnknowns = operation
+                        .recordIDsToDelete
+                        .filter(recordIDsNotSavedOrDeleted.contains)
+                        .filter { !unknownItemRecordIDs.contains($0) }
+
+                    let conflictsToSaveSet = Set(resolvedConflictsToSave.map(\.recordID))
+
+                    let batchRequestFailureRecordsToSave = recordsToSaveWithoutUnknowns
+                        .filter {
+                            !conflictsToSaveSet.contains($0.recordID) && batchRequestFailedRecordIDs.contains($0.recordID)
+                        }
+
+                    let allResolvedRecordsToSave = batchRequestFailureRecordsToSave + resolvedConflictsToSave
+
+                    return .resolveConflict(work, allResolvedRecordsToSave, recordIDsToDeleteWithoutUnknowns)
+                default:
+                    return .halt(error)
                 }
-
-                if resolvedConflictsToSave.count != serverRecordChangedErrors.count {
-                    // If couldn't handle conflict for some of the records, abort
-                    return .halt
-                }
-
-                let batchRequestRecordsToSave = operation.records.filter { record in
-                    !resolvedConflictsToSave.map { $0.recordID }.contains(record.recordID)
-                        && batchRequestFailedRecordIDs.contains(record.recordID)
-                }
-
-                let failedRecordIDsToDelete = operation.recordIDsToDelete.filter(recordIDsNotSavedOrDeleted.contains)
-
-                let allResolvedRecordsToSave = batchRequestRecordsToSave + resolvedConflictsToSave
-
-                guard !allResolvedRecordsToSave.isEmpty else {
-                    return nil
-                }
-
-                return .resolveConflict(work, allResolvedRecordsToSave, failedRecordIDsToDelete)
             case .serverRecordChanged:
-                return .handleConflict
+                guard let resolvedConflictToSave = resolveConflict(error: error) else {
+                    // If couldn't handle conflict for the records, abort
+                    return .halt(error)
+                }
+
+                return .resolveConflict(work, [resolvedConflictToSave], [])
             case .limitExceeded:
                 return .split(work, error)
             case .zoneNotFound, .userDeletedZone:
-                return .doWork(.createZone(CreateZoneOperation(zoneIdentifier: zoneIdentifier)))
+                return .doWork(.createZone(CreateZoneOperation(zoneID: zoneID)))
             case .assetNotAvailable,
                  .assetFileNotFound,
                  .assetFileModified,
@@ -121,13 +237,14 @@ struct ErrorMiddleware: Middleware {
                  .alreadyShared,
                  .tooManyParticipants,
                  .unknownItem,
-                 .operationCancelled:
-                return .halt
+                 .operationCancelled,
+                 .accountTemporarilyUnavailable:
+                return .halt(error)
             @unknown default:
                 return nil
             }
         } else {
-            return .halt
+            return .halt(error)
         }
     }
 
@@ -137,8 +254,8 @@ struct ErrorMiddleware: Middleware {
                 "resolveConflict called on an error that was not a CKError. The error was %{public}@",
                 log: log,
                 type: .fault,
-                String(describing: self))
-
+                String(describing: self)
+            )
 
             return nil
         }
@@ -148,7 +265,8 @@ struct ErrorMiddleware: Middleware {
                 "resolveConflict called on a CKError that was not a serverRecordChanged error. The error was %{public}@",
                 log: log,
                 type: .fault,
-                String(describing: effectiveError))
+                String(describing: effectiveError)
+            )
 
             return nil
         }
@@ -158,7 +276,8 @@ struct ErrorMiddleware: Middleware {
                 "Failed to obtain client record from serverRecordChanged error. The error was %{public}@",
                 log: log,
                 type: .fault,
-                String(describing: effectiveError))
+                String(describing: effectiveError)
+            )
 
             return nil
         }
@@ -168,14 +287,16 @@ struct ErrorMiddleware: Middleware {
                 "Failed to obtain server record from serverRecordChanged error. The error was %{public}@",
                 log: log,
                 type: .fault,
-                String(describing: effectiveError))
+                String(describing: effectiveError)
+            )
 
             return nil
         }
 
         os_log(
             "CloudKit conflict with record of type %{public}@. Running conflict resolver", log: log,
-            type: .error, serverRecord.recordType)
+            type: .error, serverRecord.recordType
+        )
 
         guard let resolveConflict = session.resolveConflict else {
             return nil
@@ -187,8 +308,25 @@ struct ErrorMiddleware: Middleware {
 
         // Always return the server record so we don't end up in a conflict loop (the server record has the change tag we want to use)
         // https://developer.apple.com/documentation/cloudkit/ckerror/2325208-serverrecordchanged
-        resolvedRecord.allKeys().forEach { serverRecord[$0] = resolvedRecord[$0] }
+
+        let encryptedKeys = Set(resolvedRecord.encryptedValues.allKeys())
+
+        resolvedRecord.allKeys().forEach { key in
+            if encryptedKeys.contains(key) {
+                serverRecord.encryptedValues[key] = resolvedRecord.encryptedValues[key]
+            } else {
+                serverRecord[key] = resolvedRecord[key]
+            }
+        }
 
         return serverRecord
+    }
+
+    func resolveExpiredChangeToken() -> CKServerChangeToken? {
+        guard let resolveExpiredChangeToken = session.resolveExpiredChangeToken else {
+            return nil
+        }
+
+        return resolveExpiredChangeToken()
     }
 }

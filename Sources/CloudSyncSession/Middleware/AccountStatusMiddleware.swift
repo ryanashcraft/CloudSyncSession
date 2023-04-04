@@ -1,6 +1,7 @@
 import CloudKit
 import os.log
 
+/// Middleware that looks up the account status when the session starts and dispatches `accountStatusChanged` events.
 public struct AccountStatusMiddleware: Middleware {
     public var session: CloudSyncSession
     let ckContainer: CKContainer
@@ -10,6 +11,12 @@ public struct AccountStatusMiddleware: Middleware {
         category: "Account Status Middleware"
     )
 
+    /**
+     Creates an account status middleware struct, which should be appended to the chain of session middlewares.
+
+     - Parameter session: The cloud sync session.
+     - Parameter ckContainer: The CloudKit container.
+     */
     public init(session: CloudSyncSession, ckContainer: CKContainer) {
         self.session = session
         self.ckContainer = ckContainer

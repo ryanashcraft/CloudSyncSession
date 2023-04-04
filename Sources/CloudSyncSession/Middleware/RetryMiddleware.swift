@@ -1,7 +1,7 @@
 import CloudKit
 import Foundation
 
-private let maxRetryCount = 5
+let maxRetryCount = 5
 
 private func getRetryTimeInterval(retryCount: Int) -> TimeInterval {
     return TimeInterval(pow(Double(retryCount), 2.0))
@@ -18,7 +18,7 @@ struct RetryMiddleware: Middleware {
             let currentRetryCount = work.retryCount
 
             if currentRetryCount + 1 > maxRetryCount {
-                session.dispatch(event: .workFailure(work, error))
+                session.dispatch(event: .halt(error))
             } else {
                 let retryInterval: TimeInterval
 

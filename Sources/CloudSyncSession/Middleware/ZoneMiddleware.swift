@@ -9,7 +9,11 @@ public struct ZoneMiddleware: Middleware {
         switch event {
         case .start:
             if session.state.hasCreatedZone == nil {
-                session.dispatch(event: .doWork(SyncWork.createZone(CreateZoneOperation(zoneIdentifier: session.zoneIdentifier))))
+                session.dispatch(event: .doWork(SyncWork.createZone(CreateZoneOperation(zoneID: session.zoneID))))
+            }
+
+            if session.state.hasCreatedSubscription == nil {
+                session.dispatch(event: .doWork(SyncWork.createSubscription(CreateSubscriptionOperation(zoneID: session.zoneID))))
             }
         default:
             break

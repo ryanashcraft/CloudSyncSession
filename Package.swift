@@ -6,16 +6,15 @@ import PackageDescription
 let package = Package(
     name: "CloudSyncSession",
     platforms: [
-        .iOS(.v13),
-        .macOS(.v10_15),
-        .tvOS(.v13),
-        .watchOS(.v6),
+        .iOS("15.0"),
+        .watchOS("8.0"),
     ],
     products: [
         // Products define the executables and libraries a package produces, and make them visible to other packages.
         .library(
             name: "CloudSyncSession",
-            targets: ["CloudSyncSession"]),
+            targets: ["CloudSyncSession"]
+        ),
     ],
     dependencies: [
         // Dependencies declare other packages that this package depends on.

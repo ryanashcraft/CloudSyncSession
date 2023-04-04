@@ -13,20 +13,22 @@ struct WorkMiddleware: Middleware {
         let event = next(event)
         let newState = session.state
 
-        if prevState.currentWork != newState.currentWork {
-            if let work = newState.currentWork {
+        if let work = newState.currentWork {
+            let prevWork = prevState.currentWork
+
+            if prevWork?.id != work.id || prevWork?.retryCount != work.retryCount {
                 dispatchQueue.asyncAfter(deadline: .now() + workDelay) {
                     self.doWork(work)
                 }
             }
         }
 
-        return next(event)
+        return event
     }
 
     private func doWork(_ work: SyncWork) {
         switch work {
-        case .fetch(let operation):
+        case let .fetch(operation):
             session.operationHandler.handle(fetchOperation: operation) { result in
                 switch result {
                 case let .failure(error):
@@ -35,7 +37,7 @@ struct WorkMiddleware: Middleware {
                     session.dispatch(event: .workSuccess(work, .fetch(response)))
                 }
             }
-        case .modify(let operation):
+        case let .modify(operation):
             session.operationHandler.handle(modifyOperation: operation) { result in
                 switch result {
                 case let .failure(error):
@@ -44,13 +46,22 @@ struct WorkMiddleware: Middleware {
                     session.dispatch(event: .workSuccess(work, .modify(response)))
                 }
             }
-        case .createZone(let operation):
+        case let .createZone(operation):
             session.operationHandler.handle(createZoneOperation: operation) { result in
                 switch result {
                 case let .failure(error):
                     session.dispatch(event: .workFailure(work, error))
                 case let .success(hasCreatedZone):
                     session.dispatch(event: .workSuccess(work, .createZone(hasCreatedZone)))
+                }
+            }
+        case let .createSubscription(operation):
+            session.operationHandler.handle(createSubscriptionOperation: operation) { result in
+                switch result {
+                case let .failure(error):
+                    session.dispatch(event: .workFailure(work, error))
+                case let .success(hasCreatedSubscription):
+                    session.dispatch(event: .workSuccess(work, .createSubscription(hasCreatedSubscription)))
                 }
             }
         }

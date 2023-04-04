@@ -1,54 +1,86 @@
 import CloudKit
 
-private let maxRecommendedRecordsPerOperation = 400
+public let maxRecommendedRecordsPerOperation = 400
 
-public enum SyncWork: Equatable {
+public enum SyncWork: Identifiable {
     public enum Result {
         case modify(ModifyOperation.Response)
         case fetch(FetchOperation.Response)
         case createZone(Bool)
+        case createSubscription(Bool)
     }
 
     case modify(ModifyOperation)
     case fetch(FetchOperation)
     case createZone(CreateZoneOperation)
+    case createSubscription(CreateSubscriptionOperation)
+
+    public var id: UUID {
+        switch self {
+        case let .modify(operation):
+            return operation.id
+        case let .fetch(operation):
+            return operation.id
+        case let .createZone(operation):
+            return operation.id
+        case let .createSubscription(operation):
+            return operation.id
+        }
+    }
 
     var retryCount: Int {
         switch self {
-        case .modify(let operation):
+        case let .modify(operation):
             return operation.retryCount
-        case .fetch(let operation):
+        case let .fetch(operation):
             return operation.retryCount
-        case .createZone(let operation):
+        case let .createZone(operation):
+            return operation.retryCount
+        case let .createSubscription(operation):
             return operation.retryCount
         }
     }
 
     var retried: SyncWork {
         switch self {
-        case .modify(var operation):
+        case var .modify(operation):
             operation.retryCount += 1
 
             return .modify(operation)
-        case .fetch(var operation):
+        case var .fetch(operation):
             operation.retryCount += 1
 
             return .fetch(operation)
-        case .createZone(var operation):
+        case var .createZone(operation):
             operation.retryCount += 1
 
             return .createZone(operation)
+        case var .createSubscription(operation):
+            operation.retryCount += 1
+
+            return .createSubscription(operation)
+        }
+    }
+
+    var checkpointID: UUID? {
+        switch self {
+        case let .modify(operation):
+            return operation.checkpointID
+        default:
+            return nil
         }
     }
 
     var debugDescription: String {
         switch self {
-        case .modify(let operation):
-            return "modify with \(operation.records.count) records to save and \(operation.recordIDsToDelete.count) to delete"
+        case let .modify(operation):
+            return "Modify with \(operation.records.count) records to save and \(operation.recordIDsToDelete.count) to delete"
         case .fetch:
-            return "fetch"
+            return "Fetch"
         case .createZone:
-            return "create zone"
+            return "Create zone"
+        case .createSubscription:
+            return "Create subscription"
         }
     }
 }
@@ -57,15 +89,15 @@ protocol SyncOperation {
     var retryCount: Int { get set }
 }
 
-public struct FetchOperation: Equatable {
+public struct FetchOperation: Identifiable, SyncOperation {
     public struct Response {
-        let changeToken: CKServerChangeToken?
-        let changedRecords: [CKRecord]
-        let deletedRecordIDs: [CKRecord.ID]
-        let hasMore: Bool
+        public let changeToken: CKServerChangeToken?
+        public let changedRecords: [CKRecord]
+        public let deletedRecordIDs: [CKRecord.ID]
+        public let hasMore: Bool
     }
 
-    let id = UUID()
+    public let id = UUID()
 
     var changeToken: CKServerChangeToken?
     var retryCount: Int = 0
@@ -75,21 +107,25 @@ public struct FetchOperation: Equatable {
     }
 }
 
-public struct ModifyOperation: Equatable, SyncOperation {
+public struct ModifyOperation: Identifiable, SyncOperation {
     public struct Response {
-        let savedRecords: [CKRecord]
-        let deletedRecordIDs: [CKRecord.ID]
+        public let savedRecords: [CKRecord]
+        public let deletedRecordIDs: [CKRecord.ID]
     }
 
-    let id = UUID()
+    public let id = UUID()
+    public let checkpointID: UUID?
+    public let userInfo: [String: Any]?
 
     var records: [CKRecord]
     var recordIDsToDelete: [CKRecord.ID]
     var retryCount: Int = 0
 
-    public init(records: [CKRecord], recordIDsToDelete: [CKRecord.ID]) {
+    public init(records: [CKRecord], recordIDsToDelete: [CKRecord.ID], checkpointID: UUID?, userInfo: [String: Any]?) {
         self.records = records
         self.recordIDsToDelete = recordIDsToDelete
+        self.checkpointID = checkpointID
+        self.userInfo = userInfo
     }
 
     var shouldSplit: Bool {
@@ -100,8 +136,8 @@ public struct ModifyOperation: Equatable, SyncOperation {
         let splitRecords: [[CKRecord]] = records.chunked(into: maxRecommendedRecordsPerOperation)
         let splitRecordIDsToDelete: [[CKRecord.ID]] = recordIDsToDelete.chunked(into: maxRecommendedRecordsPerOperation)
 
-        return splitRecords.map { ModifyOperation(records: $0, recordIDsToDelete: []) } +
-            splitRecordIDsToDelete.map { ModifyOperation(records: [], recordIDsToDelete: $0) }
+        return splitRecords.map { ModifyOperation(records: $0, recordIDsToDelete: [], checkpointID: nil, userInfo: userInfo) } +
+            splitRecordIDsToDelete.enumerated().map { ModifyOperation(records: [], recordIDsToDelete: $0.element, checkpointID: $0.offset == splitRecordIDsToDelete.count - 1 ? checkpointID : nil, userInfo: userInfo) }
     }
 
     var splitInHalf: [ModifyOperation] {
@@ -112,20 +148,31 @@ public struct ModifyOperation: Equatable, SyncOperation {
         let secondHalfRecordIDsToDelete = Array(recordIDsToDelete[recordIDsToDelete.count / 2 ..< recordIDsToDelete.count])
 
         return [
-            ModifyOperation(records: firstHalfRecords, recordIDsToDelete: firstHalfRecordIDsToDelete),
-            ModifyOperation(records: secondHalfRecords, recordIDsToDelete: secondHalfRecordIDsToDelete),
+            ModifyOperation(records: firstHalfRecords, recordIDsToDelete: firstHalfRecordIDsToDelete, checkpointID: nil, userInfo: userInfo),
+            ModifyOperation(records: secondHalfRecords, recordIDsToDelete: secondHalfRecordIDsToDelete, checkpointID: checkpointID, userInfo: userInfo),
         ]
     }
 }
 
-public struct CreateZoneOperation: Equatable {
-    var zoneIdentifier: CKRecordZone.ID
+public struct CreateZoneOperation: Identifiable, SyncOperation {
+    var zoneID: CKRecordZone.ID
     var retryCount: Int = 0
 
-    let id = UUID()
+    public let id = UUID()
 
-    public init(zoneIdentifier: CKRecordZone.ID) {
-        self.zoneIdentifier = zoneIdentifier
+    public init(zoneID: CKRecordZone.ID) {
+        self.zoneID = zoneID
+    }
+}
+
+public struct CreateSubscriptionOperation: Identifiable, SyncOperation {
+    var zoneID: CKRecordZone.ID
+    var retryCount: Int = 0
+
+    public let id = UUID()
+
+    public init(zoneID: CKRecordZone.ID) {
+        self.zoneID = zoneID
     }
 }
 

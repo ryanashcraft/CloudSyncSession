@@ -1,15 +1,15 @@
+import CloudKit
+@testable import CloudSyncSession
 import Combine
 import XCTest
-@testable import CloudSyncSession
 
 class SuccessfulMockOperationHandler: OperationHandler {
     private var operationCount = 0
 
-    func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
+    func handle(createZoneOperation _: CreateZoneOperation, completion _: @escaping (Result<Bool, Error>) -> Void) {}
+    func handle(createSubscriptionOperation _: CreateSubscriptionOperation, completion _: @escaping (Result<Bool, Error>) -> Void) {}
 
-    }
-
-    func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
+    func handle(fetchOperation _: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
             self.operationCount += 1
 
@@ -40,15 +40,11 @@ class FailingMockOperationHandler: OperationHandler {
         self.error = error
     }
 
-    func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
+    func handle(createZoneOperation _: CreateZoneOperation, completion _: @escaping (Result<Bool, Error>) -> Void) {}
+    func handle(createSubscriptionOperation _: CreateSubscriptionOperation, completion _: @escaping (Result<Bool, Error>) -> Void) {}
+    func handle(fetchOperation _: FetchOperation, completion _: @escaping (Result<FetchOperation.Response, Error>) -> Void) {}
 
-    }
-
-    func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
-
-    }
-
-    func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
+    func handle(modifyOperation _: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
             completion(.failure(self.error))
         }
@@ -64,13 +60,9 @@ class FailOnceMockOperationHandler: OperationHandler {
         self.error = error
     }
 
-    func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
-
-    }
-
-    func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
-
-    }
+    func handle(createZoneOperation _: CreateZoneOperation, completion _: @escaping (Result<Bool, Error>) -> Void) {}
+    func handle(createSubscriptionOperation _: CreateSubscriptionOperation, completion _: @escaping (Result<Bool, Error>) -> Void) {}
+    func handle(fetchOperation _: FetchOperation, completion _: @escaping (Result<FetchOperation.Response, Error>) -> Void) {}
 
     func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
@@ -86,15 +78,11 @@ class FailOnceMockOperationHandler: OperationHandler {
 }
 
 class PartialFailureMockOperationHandler: OperationHandler {
-    func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
+    func handle(createZoneOperation _: CreateZoneOperation, completion _: @escaping (Result<Bool, Error>) -> Void) {}
+    func handle(fetchOperation _: FetchOperation, completion _: @escaping (Result<FetchOperation.Response, Error>) -> Void) {}
+    func handle(createSubscriptionOperation _: CreateSubscriptionOperation, completion _: @escaping (Result<Bool, Error>) -> Void) {}
 
-    }
-
-    func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
-        
-    }
-
-    func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
+    func handle(modifyOperation _: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
             completion(.failure(CKError(.partialFailure)))
         }
@@ -122,12 +110,16 @@ final class CloudSyncSessionTests: XCTestCase {
         let mockOperationHandler = SuccessfulMockOperationHandler()
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
 
         session.dispatch(event: .accountStatusChanged(.available))
-        let createZoneWork = SyncWork.createZone(CreateZoneOperation(zoneIdentifier: testZoneID))
+        let createZoneWork = SyncWork.createZone(CreateZoneOperation(zoneID: testZoneID))
         session.dispatch(event: .workSuccess(createZoneWork, .createZone(true)))
+        let createSubscriptionWork = SyncWork.createSubscription(CreateSubscriptionOperation(zoneID: testZoneID))
+        session.dispatch(event: .workSuccess(createSubscriptionWork, .createSubscription(true)))
 
         session.$state
             .sink { newState in
@@ -146,20 +138,29 @@ final class CloudSyncSessionTests: XCTestCase {
         let mockOperationHandler = SuccessfulMockOperationHandler()
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
 
-        session.onRecordsModified = { records, _ in
-            XCTAssertEqual(records.count, 1)
+        var tasks = Set<AnyCancellable>()
+        session.modifyWorkCompletedSubject
+            .sink { _, response in
+                XCTAssertEqual(response.savedRecords.count, 1)
 
-            expectation.fulfill()
-        }
+                expectation.fulfill()
+            }
+            .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
-        session.dispatch(event: .doWork(.modify(operation)))
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+        session.modify(operation)
 
-        wait(for: [expectation], timeout: 1)
+        wait(for: [expectation], timeout: 1000)
     }
 
     func testModifyFailure() {
@@ -169,13 +170,21 @@ final class CloudSyncSessionTests: XCTestCase {
         let mockOperationHandler = FailingMockOperationHandler(error: CKError(.notAuthenticated))
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
 
-        session.onRecordsModified = { records, _ in
-            XCTFail()
-        }
+        session.modifyWorkCompletedSubject
+            .sink { _, _ in
+                XCTFail()
+            }
+            .store(in: &tasks)
 
         session.$state
             .sink { newState in
@@ -185,29 +194,39 @@ final class CloudSyncSessionTests: XCTestCase {
             }
             .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
-        session.dispatch(event: .doWork(.modify(operation)))
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+        session.modify(operation)
 
         wait(for: [expectation], timeout: 1)
     }
 
     func testHaltedIgnoresModifyEvents() {
+        var tasks = Set<AnyCancellable>()
         let expectation = self.expectation(description: "work")
         expectation.isInverted = true
 
         let mockOperationHandler = SuccessfulMockOperationHandler()
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true, isHalted: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true,
+            isHalted: true
+        )
 
-        session.onRecordsModified = { records, _ in
-            expectation.fulfill()
-        }
+        session.modifyWorkCompletedSubject
+            .sink { _, _ in
+                expectation.fulfill()
+            }
+            .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
-        session.dispatch(event: .doWork(.modify(operation)))
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+        session.modify(operation)
 
         wait(for: [expectation], timeout: 1)
     }
@@ -220,9 +239,15 @@ final class CloudSyncSessionTests: XCTestCase {
         let mockOperationHandler = FailingMockOperationHandler(error: CKError(.notAuthenticated))
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
 
         session.$state
             .receive(on: DispatchQueue.main)
@@ -235,30 +260,39 @@ final class CloudSyncSessionTests: XCTestCase {
             }
             .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
-        session.dispatch(event: .doWork(.modify(operation)))
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+        session.modify(operation)
 
         wait(for: [expectation], timeout: 1)
     }
 
     func testResumesWorkAfterUnhalting() {
+        var tasks = Set<AnyCancellable>()
         let expectation = self.expectation(description: "work")
 
         let mockOperationHandler = SuccessfulMockOperationHandler()
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: false, hasCreatedZone: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: false,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
 
-        session.onRecordsModified = { records, _ in
-            XCTAssertEqual(records.count, 1)
+        session.modifyWorkCompletedSubject
+            .sink { _, response in
+                XCTAssertEqual(response.savedRecords.count, 1)
 
-            expectation.fulfill()
-        }
+                expectation.fulfill()
+            }
+            .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
-        session.dispatch(event: .doWork(.modify(operation)))
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+        session.modify(operation)
         session.dispatch(event: .accountStatusChanged(.available))
 
         wait(for: [expectation], timeout: 1)
@@ -271,9 +305,15 @@ final class CloudSyncSessionTests: XCTestCase {
         let mockOperationHandler = PartialFailureMockOperationHandler()
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
 
         // Won't recover because no conflict handler set up
 
@@ -286,111 +326,147 @@ final class CloudSyncSessionTests: XCTestCase {
             }
             .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
-        session.dispatch(event: .doWork(.modify(operation)))
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+        session.modify(operation)
 
         wait(for: [expectation], timeout: 1)
     }
 
     func testRetries() {
+        var tasks = Set<AnyCancellable>()
         let expectation = self.expectation(description: "work")
 
         let mockOperationHandler = FailOnceMockOperationHandler(error: CKError(.networkUnavailable))
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
 
-        session.onRecordsModified = { records, _ in
-            XCTAssertEqual(records.count, 1)
+        session.modifyWorkCompletedSubject
+            .sink { _, response in
+                XCTAssertEqual(response.savedRecords.count, 1)
 
-            expectation.fulfill()
-        }
+                expectation.fulfill()
+            }
+            .store(in: &tasks)
 
-        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [])
-        session.dispatch(event: .doWork(.modify(operation)))
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+        session.modify(operation)
 
         wait(for: [expectation], timeout: 1)
     }
 
     func testSplitsLargeWork() {
+        var tasks = Set<AnyCancellable>()
         let expectation = self.expectation(description: "work")
 
         let mockOperationHandler = SuccessfulMockOperationHandler()
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
 
         var timesCalled = 0
 
-        session.onRecordsModified = { records, _ in
-            timesCalled += 1
+        session.modifyWorkCompletedSubject
+            .sink { _, response in
+                timesCalled += 1
 
-            XCTAssertEqual(records.count, 400)
+                XCTAssertEqual(response.savedRecords.count, 400)
 
-            if timesCalled >= 2 {
-                expectation.fulfill()
+                if timesCalled >= 2 {
+                    expectation.fulfill()
+                }
             }
-        }
+            .store(in: &tasks)
 
         let records = (0 ..< 800).map { _ in makeTestRecord() }
-        let operation = ModifyOperation(records: records, recordIDsToDelete: [])
-        session.dispatch(event: .doWork(.modify(operation)))
+        let operation = ModifyOperation(records: records, recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+        session.modify(operation)
 
         wait(for: [expectation], timeout: 1)
     }
 
     func testSplitsInHalf() {
+        var tasks = Set<AnyCancellable>()
         let expectation = self.expectation(description: "work")
 
         let mockOperationHandler = FailOnceMockOperationHandler(error: CKError(.limitExceeded))
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
 
         var timesCalled = 0
 
-        session.onRecordsModified = { records, _ in
-            timesCalled += 1
+        session.modifyWorkCompletedSubject
+            .sink { _, response in
+                timesCalled += 1
 
-            XCTAssertEqual(records.count, 50)
+                XCTAssertEqual(response.savedRecords.count, 50)
 
-            if timesCalled >= 2 {
-                expectation.fulfill()
+                if timesCalled >= 2 {
+                    expectation.fulfill()
+                }
             }
-        }
+            .store(in: &tasks)
 
         let records = (0 ..< 100).map { _ in makeTestRecord() }
-        let operation = ModifyOperation(records: records, recordIDsToDelete: [])
-        session.dispatch(event: .doWork(.modify(operation)))
+        let operation = ModifyOperation(records: records, recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+        session.modify(operation)
 
-        wait(for: [expectation], timeout: 1)
+        wait(for: [expectation], timeout: 1000)
     }
 
     func testLoadsMore() {
+        var tasks = Set<AnyCancellable>()
         let expectation = self.expectation(description: "work")
 
         let mockOperationHandler = SuccessfulMockOperationHandler()
         let session = CloudSyncSession(
             operationHandler: mockOperationHandler,
-            zoneIdentifier: testZoneID
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
         )
-        session.state = SyncState(hasGoodAccountStatus: true, hasCreatedZone: true)
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
 
         var timesCalled = 0
 
-        session.onFetchCompleted = { _, _, _ in
-            timesCalled += 1
+        session.fetchWorkCompletedSubject
+            .sink { _ in
+                timesCalled += 1
 
-            if timesCalled >= 2 {
-                expectation.fulfill()
+                if timesCalled >= 2 {
+                    expectation.fulfill()
+                }
             }
-        }
+            .store(in: &tasks)
 
         let operation = FetchOperation(changeToken: nil)
         session.dispatch(event: .doWork(.fetch(operation)))

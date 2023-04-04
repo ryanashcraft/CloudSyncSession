@@ -1,22 +1,38 @@
 import CloudKit
 
 public enum SyncEvent {
+    /// Should be dispatched when the session starts.
     case start
-    case halt
 
+    /// Indicates a non-recoverable er  ror has occured and we should halt.
+    case halt(Error)
+
+    /// Indicates the iCloud account status changed.
     case accountStatusChanged(CKAccountStatus)
 
+    /// Queues up work.
     case doWork(SyncWork)
+
+    /// Queues up work that has failed and will be retried.
     case retryWork(SyncWork)
+
+    /// Indicates that work has failed.
     case workFailure(SyncWork, Error)
+
+    /// Indicates that work has succeeded.
     case workSuccess(SyncWork, SyncWork.Result)
 
-    case handleConflict
+    /// Queues up modification work after the work had previously failed due to a conflict.
+    /// Includes failed work, records to save including resolved records, and record IDs that should be deleted.
     case resolveConflict(SyncWork, [CKRecord], [CKRecord.ID])
 
+    /// Indicates that work should be retried after some time.
     case retry(SyncWork, Error, TimeInterval?)
+
+    /// Indicates that work should be split up.
     case split(SyncWork, Error)
 
+    /// Does nothing.
     case noop
 
     var logDescription: String {
@@ -25,7 +41,7 @@ public enum SyncEvent {
             return "Start"
         case .halt:
             return "Halt"
-        case .accountStatusChanged(let status):
+        case let .accountStatusChanged(status):
             return "Account status changed: \(status.debugDescription)"
         case let .doWork(work):
             return "Do work: \(work.debugDescription)"
@@ -39,10 +55,8 @@ public enum SyncEvent {
             return "Retry"
         case let .split(work, _):
             return "Split work: \(work.debugDescription)"
-        case .handleConflict:
-            return "Conflict"
-        case .resolveConflict(_, let records, let recordIDsToDelete):
-            return "Resolved \(records.count) records with \(recordIDsToDelete.count) deleted"
+        case let .resolveConflict(_, records, recordIDsToDelete):
+            return "Resolving \(records.count) records with \(recordIDsToDelete.count) deleted"
         case .noop:
             return "Noop"
         }
@@ -60,6 +74,8 @@ private extension CKAccountStatus {
             return "No Account"
         case .restricted:
             return "Restricted"
+        case .temporarilyUnavailable:
+            return "Temporarily Unavailable"
         @unknown default:
             return "Unknown"
         }

@@ -1,7 +1,7 @@
 public struct AnyMiddleware: Middleware {
     public init<M: Middleware>(value: M) {
-        self.session = value.session
-        self.run = value.run
+        session = value.session
+        run = value.run
     }
 
     public var session: CloudSyncSession
