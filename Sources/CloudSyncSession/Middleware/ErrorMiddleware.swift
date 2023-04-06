@@ -29,7 +29,7 @@ struct ErrorMiddleware: Middleware {
     var session: CloudSyncSession
 
     private let log = OSLog(
-        subsystem: "com.algebraiclabs.CloudSyncSession",
+        subsystem: "com.ryanashcraft.CloudSyncSession",
         category: "Error Middleware"
     )
 

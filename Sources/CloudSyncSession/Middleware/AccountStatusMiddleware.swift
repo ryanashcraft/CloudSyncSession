@@ -7,7 +7,7 @@ public struct AccountStatusMiddleware: Middleware {
     let ckContainer: CKContainer
 
     private let log = OSLog(
-        subsystem: "com.algebraiclabs.CloudSyncSession",
+        subsystem: "com.ryanashcraft.CloudSyncSession",
         category: "Account Status Middleware"
     )
 

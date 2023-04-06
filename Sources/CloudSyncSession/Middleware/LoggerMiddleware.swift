@@ -4,7 +4,7 @@ struct LoggerMiddleware: Middleware {
     var session: CloudSyncSession
 
     var log = OSLog(
-        subsystem: "com.algebraiclabs.CloudSyncSession",
+        subsystem: "com.ryanashcraft.CloudSyncSession",
         category: "Sync Event"
     )
 
