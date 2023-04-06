@@ -306,18 +306,16 @@ struct ErrorMiddleware: Middleware {
             return nil
         }
 
-        // Always return the server record so we don't end up in a conflict loop (the server record has the change tag we want to use)
+        // Always return the server record so we don't end up in a conflict loop.
+        // The server record has the change tag we want to use.
         // https://developer.apple.com/documentation/cloudkit/ckerror/2325208-serverrecordchanged
 
-        let encryptedKeys = Set(resolvedRecord.encryptedValues.allKeys())
+        // First, nil out all keys in case any keys in the newly resolved record are nil,
+        // we don't want those to carry over into the final resolved copy
+        serverRecord.removeAllFields()
 
-        resolvedRecord.allKeys().forEach { key in
-            if encryptedKeys.contains(key) {
-                serverRecord.encryptedValues[key] = resolvedRecord.encryptedValues[key]
-            } else {
-                serverRecord[key] = resolvedRecord[key]
-            }
-        }
+        // Copy over all fields from the resolved record
+        serverRecord.copyFields(from: resolvedRecord)
 
         return serverRecord
     }
@@ -328,5 +326,31 @@ struct ErrorMiddleware: Middleware {
         }
 
         return resolveExpiredChangeToken()
+    }
+}
+
+internal extension CKRecord {
+    func removeAllFields() {
+        let encryptedKeys = Set(encryptedValues.allKeys())
+
+        allKeys().forEach { key in
+            if encryptedKeys.contains(key) {
+                encryptedValues[key] = nil
+            } else {
+                self[key] = nil
+            }
+        }
+    }
+
+    func copyFields(from otherRecord: CKRecord) {
+        let encryptedKeys = Set(otherRecord.encryptedValues.allKeys())
+
+        otherRecord.allKeys().forEach { key in
+            if encryptedKeys.contains(key) {
+                encryptedValues[key] = otherRecord.encryptedValues[key]
+            } else {
+                self[key] = otherRecord[key]
+            }
+        }
     }
 }

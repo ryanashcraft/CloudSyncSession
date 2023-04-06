@@ -473,4 +473,32 @@ final class CloudSyncSessionTests: XCTestCase {
 
         wait(for: [expectation], timeout: 1)
     }
+
+    // MARK: - CKRecord Extensions
+
+    func testCKRecordRemoveAllFields() {
+        let record = makeTestRecord()
+        record["hello"] = "world"
+        record.encryptedValues["secrets"] = "👻"
+
+        record.removeAllFields()
+
+        XCTAssertEqual(record["hello"] as! String?, nil)
+        XCTAssertEqual(record["secrets"] as! String?, nil)
+    }
+
+    func testCKRecordCopyFields() {
+        let recordA = makeTestRecord()
+        recordA["hello"] = "world"
+        recordA.encryptedValues["secrets"] = "👻"
+
+        let recordB = makeTestRecord()
+        recordB["hello"] = "🌎"
+        recordA.encryptedValues["secrets"] = "💀"
+
+        recordA.copyFields(from: recordB)
+
+        XCTAssertEqual(recordA["hello"] as! String?, "🌎")
+        XCTAssertEqual(recordA.encryptedValues["secrets"] as! String?, "💀")
+    }
 }
