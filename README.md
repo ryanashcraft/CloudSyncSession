@@ -1,5 +1,7 @@
 # CloudSyncSession
 
+![main branch CI status](https://github.com/ryanashcraft/CloudSyncSession/actions/workflows/swift.yml/badge.svg)
+
 CloudSyncSession is a layer of abstraction on top of CloudKit that provides error handling and queueing for offline-capable apps.
 
 Similar to `NSPersistentCloudKitContainer`, CloudSyncSession works for apps that need to sync all records in a zone between iCloud and the client. Unlike `NSPersistentCloudKitContainer`, which offers local persistence, CloudSyncSession does not persist state to disk in any way. As such, it can be used in conjunction with any local persistence solution (e.g. GRDB, Core Data, user defaults and file storage, etc.).
