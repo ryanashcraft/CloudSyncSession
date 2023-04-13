@@ -246,6 +246,4 @@ If you'd like to submit a bug fix or enhancement, please submit a pull request. 
 
 See [LICENSE](/LICENSE.md).
 
-Portions of this library were taken and modified from Cirrus, an MIT-licensed
-library, Copyright (c) 2020 Jay Hickey. The code has been modified for use in
-this project.
+Portions of this library were taken and modified from [Cirrus](https://github.com/jayhickey/Cirrus), an MIT-licensed library, Copyright (c) 2020 Jay Hickey. The code has been modified for use in this project.
