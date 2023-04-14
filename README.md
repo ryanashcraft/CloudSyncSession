@@ -4,7 +4,7 @@
 
 CloudSyncSession is a Swift library that builds on top of the CloudKit framework to make it easier to write sync-enabled, offline-capable apps.
 
-Similar to `NSPersistentCloudKitContainer`, CloudSyncSession works for apps that need to sync all records in a zone between iCloud and the client. Unlike `NSPersistentCloudKitContainer`, which offers local persistence, CloudSyncSession does not persist state to disk in any way. As such, it can be used in conjunction with any local persistence solution (e.g. GRDB, Core Data, user defaults and file storage, etc.).
+Similar to [NSPersistentCloudKitContainer](https://developer.apple.com/documentation/coredata/nspersistentcloudkitcontainer), CloudSyncSession works for apps that need to sync all records in a zone between iCloud and the client. Unlike NSPersistentCloudKitContainer, which offers local persistence, CloudSyncSession does not persist state to disk in any way. As such, it can be used in conjunction with any local persistence solution (e.g. GRDB, Core Data, user defaults and file storage, etc.).
 
 ## Design Principles
 
@@ -13,7 +13,8 @@ Similar to `NSPersistentCloudKitContainer`, CloudSyncSession works for apps that
 3. Modular. To the extent that it makes sense, different behaviors are handled separately by different components.
 4. Event-based. State is predictable, as it is updated based on the series of events that have previously occurred.
 5. Resilient. Recoverable errors are gracefully handled using retries and backoffs. Non-recoverable errors halt further execution until the app signals that work should be resumed.
-6. Focused. This project aims to solve a particular use case and do it well.
+6. Inspectable. The current state of the session can be evaluated for troubleshooting and diagnostics.
+7. Focused. This project aims to solve a particular use case and do it well.
 
 ## Usage
 
@@ -177,6 +178,10 @@ cloudSyncSession.eventsPublisher
     }
 ```
 
+## Installation
+
+To use CloudSyncSession with Swift Package Manager, add a dependency to https://github.com/ryanashcraft/CloudSyncSession
+
 ## Under the Hood
 
 CloudSyncSession is event-based. Events describe what has occurred, or what has been requested. The current state of the session is a result of the previous events up to that point.
@@ -238,7 +243,7 @@ The event-based architecture was heavily influenced by [Redux](https://github.co
 
 ## Contributions
 
-I hope that you find this library helpful, either as a reference or as a solution for your app. In an effort to keep maintenance low and minimize risk, I am not interested in refactors, large changes, or expanding the scope of the capabilities that is offered. Please feel free to fork (see [LICENSE](./LICENSE.md)).
+I hope that you find this library helpful, either as a reference or as a solution for your app. In an effort to keep maintenance low and minimize risk, I am not interested in large refactors or expanding the greatly scope of the capabilities currently offered. Please feel free to fork (see [LICENSE](./LICENSE.md)).
 
 If you'd like to submit a bug fix or enhancement, please submit a pull request. Please include some context, your motivation, add tests if appropriate.
 
