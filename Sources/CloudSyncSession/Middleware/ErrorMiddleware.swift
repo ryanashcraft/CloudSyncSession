@@ -306,16 +306,17 @@ struct ErrorMiddleware: Middleware {
             return nil
         }
 
-        // Always return the server record so we don't end up in a conflict loop.
-        // The server record has the change tag we want to use.
-        // https://developer.apple.com/documentation/cloudkit/ckerror/2325208-serverrecordchanged
+        if serverRecord != resolvedRecord {
+            // Always return the server record so we don't end up in a conflict loop.
+            // The server record has the change tag we want to use.
+            // https://developer.apple.com/documentation/cloudkit/ckerror/2325208-serverrecordchanged
 
-        // First, nil out all keys in case any keys in the newly resolved record are nil,
-        // we don't want those to carry over into the final resolved copy
-        serverRecord.removeAllFields()
+            // First, nil out all keys in case any keys in the newly resolved record are nil,
+            // we don't want those to carry over into the final resolved copy
+            serverRecord.removeAllFields()
 
-        // Copy over all fields from the resolved record
-        serverRecord.copyFields(from: resolvedRecord)
+            serverRecord.copyFields(from: resolvedRecord)
+        }
 
         return serverRecord
     }
