@@ -317,6 +317,57 @@ public class CloudKitOperationHandler: OperationHandler {
             }
         }
     }
+    
+    public func leaveSharing(completion: @escaping (Result<Bool, Error>) -> Void) {
+        guard database.databaseScope == .shared else {
+            let invalidDatabaseError = NSError(domain: "CloudKitOperationHandler:leaveSharing", code: -1, userInfo: [ NSLocalizedDescriptionKey: "Invalid database. Leave sharing requires shared database."])
+            return completion(.failure(invalidDatabaseError))
+        }
+
+        let cloudkitShareRecordType: String = "cloudkit.share"
+        var shareRecord: CKRecord.ID?
+        var queryError: Error?
+        
+        let query = CKQuery(recordType: cloudkitShareRecordType, predicate: NSPredicate(value: true))
+        let queryOperation = CKQueryOperation(query: query)
+        queryOperation.resultsLimit = 1
+        queryOperation.zoneID = self.zoneID
+
+        queryOperation.recordMatchedBlock = { [weak self] recordID, result in
+            switch result {
+            case let .success(record):
+                guard record.recordType == cloudkitShareRecordType else { return }
+                shareRecord = recordID
+            case let .failure(error):
+                queryError = error
+            }
+        }
+        
+        queryOperation.queryResultBlock = { [weak self] result in
+            switch result {
+            case .success(let cursor):
+                guard let shareRecord else { return }
+                let deleteOperation = ModifyOperation(records: [], recordIDsToDelete: [shareRecord], checkpointID: UUID(), userInfo: nil)
+                
+                self?.handle(modifyOperation: deleteOperation) { result in
+                    switch result {
+                    case .success(_):
+                        return completion(.success(true))
+                    case .failure(let error):
+                        return completion(.failure(error))
+                    }
+                }
+            case .failure(let error):
+                return completion(.failure(error))
+            }
+        }
+        
+        queryOperation.database = database
+        queryOperation.qualityOfService = .userInitiated
+
+        queueOperation(queryOperation)
+    }
+    
 }
 
 private extension CloudKitOperationHandler {
