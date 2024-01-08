@@ -26,7 +26,7 @@ import os.log
 
 /// An object that handles all of the key operations (fetch, modify, create zone, and create subscription) using the standard CloudKit APIs.
 public class CloudKitOperationHandler: OperationHandler {
-    static let minThrottleDuration: TimeInterval = 2
+    static let minThrottleDuration: TimeInterval = 6
     static let maxThrottleDuration: TimeInterval = 60 * 10
 
     let database: CKDatabase
