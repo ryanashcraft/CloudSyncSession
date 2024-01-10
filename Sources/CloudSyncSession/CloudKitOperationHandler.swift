@@ -23,6 +23,7 @@
 
 import CloudKit
 import os.log
+import PID
 
 /// An object that handles all of the key operations (fetch, modify, create zone, and create subscription) using the standard CloudKit APIs.
 public class CloudKitOperationHandler: OperationHandler {
@@ -35,6 +36,15 @@ public class CloudKitOperationHandler: OperationHandler {
     let log: OSLog
     let savePolicy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged
     let qos: QualityOfService = .userInitiated
+    let rateLimitController = RateLimitPIDController(
+        kp: 2,
+        ki: 0.05,
+        kd: 0.01,
+        errorWindowSize: 20,
+        targetSuccessRate: 0.98,
+        initialRateLimit: 5,
+        outcomeWindowSize: 2
+    )
 
     private let operationQueue: OperationQueue = {
         let queue = OperationQueue()
@@ -86,6 +96,31 @@ public class CloudKitOperationHandler: OperationHandler {
         }
     }
 
+    private func onOperationSuccess() {
+        rateLimitController.record(outcome: .success)
+        throttleDuration = rateLimitController.rateLimit
+    }
+
+    private func onOperationError(_ error: Error) {
+        if let ckError = error as? CKError {
+            let retryAfterSeconds = ckError.retryAfterSeconds {
+                self.rateLimitController = RateLimitPIDController(
+                    kp: 2,
+                    ki: 0.05,
+                    kd: 0.01,
+                    errorWindowSize: 20,
+                    targetSuccessRate: 0.98,
+                    initialRateLimit: retryAfterSeconds,
+                    outcomeWindowSize: 2
+                )
+            } else {
+                rateLimitController.record(outcome: error.shouldRateLimit ? .failure : .success)
+            }
+
+            throttleDuration = rateLimitController.rateLimit
+        }
+    }
+
     public func handle(
         modifyOperation: ModifyOperation,
         completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void
@@ -106,15 +141,11 @@ public class CloudKitOperationHandler: OperationHandler {
 
         operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
             if let error = error {
-                if let ckError = error as? CKError {
-                    // Use the suggested retry delay, or exponentially increase throttle duration if not provided
-                    self.throttleDuration = min(Self.maxThrottleDuration, ckError.retryAfterSeconds ?? (self.throttleDuration * 2))
-                }
+                onOperationError()
 
                 completion(.failure(error))
             } else {
-                // On success, back off of the throttle duration by 66%. Backing off too quickly can result in thrashing.
-                self.throttleDuration = max(Self.minThrottleDuration, self.throttleDuration * 2 / 3)
+                onOperationSuccess()
 
                 completion(.success(ModifyOperation.Response(savedRecords: serverRecords ?? [], deletedRecordIDs: deletedRecordIDs ?? [])))
             }
@@ -199,17 +230,13 @@ public class CloudKitOperationHandler: OperationHandler {
                     String(describing: error)
                 )
 
-                if let ckError = error as? CKError {
-                    // Use the suggested retry delay, or exponentially increase throttle duration if not provided
-                    self.throttleDuration = min(Self.maxThrottleDuration, ckError.retryAfterSeconds ?? (self.throttleDuration * 2))
-                }
+                onOperationError(error)
 
                 completion(.failure(error))
             } else {
                 os_log("Finished fetching record zone changes", log: self.log, type: .info)
 
-                // On success, back off of the throttle duration by 66%. Backing off too quickly can result in thrashing.
-                self.throttleDuration = max(Self.minThrottleDuration, self.throttleDuration * 2 / 3)
+                onOperationSuccess()
 
                 completion(
                     .success(

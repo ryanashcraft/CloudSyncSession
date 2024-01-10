@@ -16,11 +16,18 @@ let package = Package(
             targets: ["CloudSyncSession"]
         ),
     ],
-    dependencies: [],
+    dependencies: [
+        .package(
+            url: "https://github.com/ryanashcraft/swift-pid.git",
+            .upToNextMajor(from: "0.0.1")
+        ),
+    ],
     targets: [
         .target(
             name: "CloudSyncSession",
-            dependencies: []
+            dependencies: [
+                .product(name: "PID", package: "swift-pid"),
+            ]
         ),
         .testTarget(
             name: "CloudSyncSessionTests",
