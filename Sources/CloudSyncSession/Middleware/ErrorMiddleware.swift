@@ -126,16 +126,7 @@ struct ErrorMiddleware: Middleware {
 
                     let partialErrors = partialErrorsByRecordID.compactMap { $0.value as? CKError }
 
-                    let allErrorsAreRetryable = partialErrors
-                        .allSatisfy { error in
-                            if case .serviceUnavailable = error.code {
-                                return true
-                            } else {
-                                return false
-                            }
-                        }
-
-                    if allErrorsAreRetryable {
+                    if error.shouldRateLimit {
                         let retryAfter = partialErrors.compactMap { $0.retryAfterSeconds }.max()
 
                         return .retry(work, error, retryAfter)
