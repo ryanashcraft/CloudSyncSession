@@ -343,7 +343,7 @@ struct ErrorMiddleware: Middleware {
     }
 }
 
-internal extension CKRecord {
+extension CKRecord {
     func removeAllFields() {
         let encryptedKeys = Set(encryptedValues.allKeys())
 

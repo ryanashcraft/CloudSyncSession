@@ -1,0 +1,28 @@
+import CloudKit
+
+extension CKError {
+    var shouldRateLimit: Bool {
+        if retryAfterSeconds != nil {
+            return true
+        }
+
+        switch ckError.code {
+        case .networkUnavailable,
+             .networkFailure,
+             .serviceUnavailable,
+             .zoneBusy,
+             .requestRateLimited,
+             .serverResponseLost:
+            return true
+        case .partialFailure:
+            if let partialErrorsByRecordID = ckError.partialErrorsByItemID as? [CKRecord.ID: Error] else {
+                return .halt(error)
+            }
+
+            let partialErrors = partialErrorsByRecordID.compactMap { $0.value as? CKError }
+            let allErrorsAreRetryable = partialErrors.allSatisfy(\.shouldThrottle)
+
+            return allErrorsAreRetryable
+        }
+    }
+}

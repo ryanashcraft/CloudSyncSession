@@ -11,16 +11,16 @@ public struct SyncState {
     }
 
     /// The queue of modification requests to be handled.
-    internal var modifyQueue = [ModifyOperation]()
+    var modifyQueue = [ModifyOperation]()
 
     /// The queue of fetch requests to be handled.
-    internal var fetchQueue = [FetchOperation]()
+    var fetchQueue = [FetchOperation]()
 
     /// The queue of create zone requests to be handled.
-    internal var createZoneQueue = [CreateZoneOperation]()
+    var createZoneQueue = [CreateZoneOperation]()
 
     /// The queue of create subscription requests to be handled.
-    internal var createSubscriptionQueue = [CreateSubscriptionOperation]()
+    var createSubscriptionQueue = [CreateSubscriptionOperation]()
 
     /// Indicates whether the CloudKit status is available. The value is nil if the account status is yet to be deteremined.
     public var hasGoodAccountStatus: Bool? = nil
@@ -68,7 +68,7 @@ public struct SyncState {
     }
 
     /// Indicates what kind of work is allowed at this time.
-    internal var allowedOperationModes: Set<OperationMode?> {
+    var allowedOperationModes: Set<OperationMode?> {
         var allowedModes: Set<OperationMode?> = [nil]
 
         if isHalted {
@@ -91,7 +91,7 @@ public struct SyncState {
     }
 
     /// An ordered list of the the kind of work that is allowed at this time.
-    internal var preferredOperationModes: [OperationMode?] {
+    var preferredOperationModes: [OperationMode?] {
         [.createZone, .createSubscription, .modify, .fetch, nil]
             .filter { allowedOperationModes.contains($0) }
             .filter { mode in
@@ -128,7 +128,7 @@ public struct SyncState {
     }
 
     /// The current work that is, or is to be, worked on.
-    internal var currentWork: SyncWork? {
+    var currentWork: SyncWork? {
         guard allowedOperationModes.contains(operationMode) else {
             return nil
         }
@@ -158,7 +158,7 @@ public struct SyncState {
     }
 
     /// Transition to a new operation mode (i.e. fetching, modifying creating a zone or subscription)
-    internal mutating func updateOperationMode() {
+    mutating func updateOperationMode() {
         if isHalted {
             operationMode = nil
         }
@@ -169,7 +169,7 @@ public struct SyncState {
     }
 
     /// Add work to the end of the appropriate queue
-    internal mutating func pushWork(_ work: SyncWork) {
+    mutating func pushWork(_ work: SyncWork) {
         switch work {
         case let .fetch(operation):
             fetchQueue.append(operation)
@@ -183,7 +183,7 @@ public struct SyncState {
     }
 
     /// Add work to the beginning of the appropriate queue.
-    internal mutating func prioritizeWork(_ work: SyncWork) {
+    mutating func prioritizeWork(_ work: SyncWork) {
         switch work {
         case let .fetch(operation):
             fetchQueue = [operation] + fetchQueue
@@ -197,7 +197,7 @@ public struct SyncState {
     }
 
     /// Remove work from the corresponding queue.
-    internal mutating func popWork(work: SyncWork) {
+    mutating func popWork(work: SyncWork) {
         switch work {
         case let .fetch(operation):
             fetchQueue = fetchQueue.filter { $0.id != operation.id }
@@ -211,7 +211,7 @@ public struct SyncState {
     }
 
     /// Update based on a sync event.
-    internal func reduce(event: SyncEvent) -> SyncState {
+    func reduce(event: SyncEvent) -> SyncState {
         var state = self
 
         switch event {
