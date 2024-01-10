@@ -126,7 +126,7 @@ struct ErrorMiddleware: Middleware {
 
                     let partialErrors = partialErrorsByRecordID.compactMap { $0.value as? CKError }
 
-                    if error.shouldRateLimit {
+                    if ckError.shouldRateLimit {
                         let retryAfter = partialErrors.compactMap { $0.retryAfterSeconds }.max()
 
                         return .retry(work, error, retryAfter)

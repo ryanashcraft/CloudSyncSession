@@ -6,7 +6,7 @@ extension CKError {
             return true
         }
 
-        switch ckError.code {
+        switch self.code {
         case .networkUnavailable,
              .networkFailure,
              .serviceUnavailable,
@@ -15,14 +15,16 @@ extension CKError {
              .serverResponseLost:
             return true
         case .partialFailure:
-            guard let partialErrorsByRecordID = ckError.partialErrorsByItemID as? [CKRecord.ID: Error] else {
+            guard let partialErrorsByRecordID = self.partialErrorsByItemID as? [CKRecord.ID: Error] else {
                 return false
             }
 
             let partialErrors = partialErrorsByRecordID.compactMap { $0.value as? CKError }
-            let allErrorsAreRetryable = partialErrors.allSatisfy(\.shouldThrottle)
+            let allErrorsAreRetryable = partialErrors.allSatisfy(\.shouldRateLimit)
 
             return allErrorsAreRetryable
+        default:
+            return false
         }
     }
 }

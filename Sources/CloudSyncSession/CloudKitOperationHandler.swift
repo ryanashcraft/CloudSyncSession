@@ -114,7 +114,7 @@ public class CloudKitOperationHandler: OperationHandler {
                     outcomeWindowSize: 2
                 )
             } else {
-                rateLimitController.record(outcome: error.shouldRateLimit ? .failure : .success)
+                rateLimitController.record(outcome: ckError.shouldRateLimit ? .failure : .success)
             }
 
             throttleDuration = rateLimitController.rateLimit
@@ -141,11 +141,11 @@ public class CloudKitOperationHandler: OperationHandler {
 
         operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
             if let error = error {
-                onOperationError()
+                self.onOperationError(error)
 
                 completion(.failure(error))
             } else {
-                onOperationSuccess()
+                self.onOperationSuccess()
 
                 completion(.success(ModifyOperation.Response(savedRecords: serverRecords ?? [], deletedRecordIDs: deletedRecordIDs ?? [])))
             }
