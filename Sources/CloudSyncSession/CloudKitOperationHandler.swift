@@ -36,7 +36,7 @@ public class CloudKitOperationHandler: OperationHandler {
     let log: OSLog
     let savePolicy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged
     let qos: QualityOfService = .userInitiated
-    let rateLimitController = RateLimitPIDController(
+    var rateLimitController = RateLimitPIDController(
         kp: 2,
         ki: 0.05,
         kd: 0.01,
@@ -103,7 +103,7 @@ public class CloudKitOperationHandler: OperationHandler {
 
     private func onOperationError(_ error: Error) {
         if let ckError = error as? CKError {
-            let retryAfterSeconds = ckError.retryAfterSeconds {
+            if let retryAfterSeconds = ckError.retryAfterSeconds {
                 self.rateLimitController = RateLimitPIDController(
                     kp: 2,
                     ki: 0.05,

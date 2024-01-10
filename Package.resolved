@@ -14,8 +14,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ryanashcraft/swift-pid.git",
       "state" : {
-        "revision" : "c30ed2e68bde6902dd4cff91609f7c3c5790c450",
-        "version" : "0.0.2"
+        "revision" : "3f524ecc12bd519f27cbbc73b986be4d60351e91",
+        "version" : "0.0.3"
       }
     }
   ],

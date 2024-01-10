@@ -15,8 +15,8 @@ extension CKError {
              .serverResponseLost:
             return true
         case .partialFailure:
-            if let partialErrorsByRecordID = ckError.partialErrorsByItemID as? [CKRecord.ID: Error] else {
-                return .halt(error)
+            guard let partialErrorsByRecordID = ckError.partialErrorsByItemID as? [CKRecord.ID: Error] else {
+                return false
             }
 
             let partialErrors = partialErrorsByRecordID.compactMap { $0.value as? CKError }
