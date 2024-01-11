@@ -7,12 +7,9 @@ extension CKError {
         }
 
         switch self.code {
-        case .networkUnavailable,
-             .networkFailure,
-             .serviceUnavailable,
+        case .serviceUnavailable,
              .zoneBusy,
-             .requestRateLimited,
-             .serverResponseLost:
+             .requestRateLimited:
             return true
         case .partialFailure:
             guard let partialErrorsByRecordID = self.partialErrorsByItemID as? [CKRecord.ID: Error] else {

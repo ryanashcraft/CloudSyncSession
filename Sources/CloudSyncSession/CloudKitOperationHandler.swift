@@ -101,7 +101,7 @@ public class CloudKitOperationHandler: OperationHandler {
 
     private func onOperationSuccess() {
         rateLimitController.record(outcome: .success)
-        throttleDuration = rateLimitController.rateLimit
+        throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
     }
 
     private func onOperationError(_ error: Error) {
@@ -120,7 +120,7 @@ public class CloudKitOperationHandler: OperationHandler {
                 rateLimitController.record(outcome: ckError.shouldRateLimit ? .failure : .success)
             }
 
-            throttleDuration = rateLimitController.rateLimit
+            throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
         }
     }
 
