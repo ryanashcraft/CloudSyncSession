@@ -59,7 +59,7 @@ public class CloudKitOperationHandler: OperationHandler {
 
             if throttleDuration > oldValue {
                 os_log(
-                    "Increasing throttle duration from %{public}.0f seconds to %{public}.0f seconds",
+                    "Increasing throttle duration from %{public}.1f seconds to %{public}.1f seconds",
                     log: log,
                     type: .default,
                     oldValue,
@@ -67,7 +67,7 @@ public class CloudKitOperationHandler: OperationHandler {
                 )
             } else if throttleDuration < oldValue {
                 os_log(
-                    "Decreasing throttle duration from %{public}.0f seconds to %{public}.0f seconds",
+                    "Decreasing throttle duration from %{public}.1f seconds to %{public}.1f seconds",
                     log: log,
                     type: .default,
                     oldValue,
@@ -106,7 +106,7 @@ public class CloudKitOperationHandler: OperationHandler {
 
             if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
                 os_log(
-                    "CloudKit error suggests retrying after %{public}.0f seconds",
+                    "CloudKit error suggests retrying after %{public}.1f seconds",
                     log: log,
                     type: .default,
                     suggestedBackoffSeconds
