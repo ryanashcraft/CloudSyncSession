@@ -27,7 +27,7 @@ import PID
 
 /// An object that handles all of the key operations (fetch, modify, create zone, and create subscription) using the standard CloudKit APIs.
 public class CloudKitOperationHandler: OperationHandler {
-    static let minThrottleDuration: TimeInterval = 6
+    static let minThrottleDuration: TimeInterval = 1
     static let maxThrottleDuration: TimeInterval = 60 * 10
 
     let database: CKDatabase
@@ -41,7 +41,7 @@ public class CloudKitOperationHandler: OperationHandler {
         ki: 0.05,
         kd: 0.02,
         errorWindowSize: 20,
-        targetSuccessRate: 0.98,
+        targetSuccessRate: 0.96,
         initialRateLimit: 5,
         outcomeWindowSize: 1
     )
