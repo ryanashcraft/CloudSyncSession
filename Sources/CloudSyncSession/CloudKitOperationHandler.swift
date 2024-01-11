@@ -78,7 +78,6 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 
     var nextOperationDeadline: DispatchTime?
-    var lastOperationTime: DispatchTime?
 
     public init(database: CKDatabase, zoneID: CKRecordZone.ID, subscriptionID: String, log: OSLog) {
         self.database = database
@@ -93,9 +92,6 @@ public class CloudKitOperationHandler: OperationHandler {
 
         DispatchQueue.main.asyncAfter(deadline: deadline) {
             self.operationQueue.addOperation(operation)
-            self.operationQueue.addOperation {
-                self.lastOperationTime = DispatchTime.now()
-            }
         }
     }
 
