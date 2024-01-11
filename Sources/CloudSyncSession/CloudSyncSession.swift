@@ -108,7 +108,7 @@ public class CloudSyncSession {
         dispatch(event: .doWork(.modify(operation)))
     }
 
-    internal func dispatch(event: SyncEvent) {
+    func dispatch(event: SyncEvent) {
         dispatchQueue.async {
             func next(event: SyncEvent, middlewaresToRun: [AnyMiddleware]) -> SyncEvent {
                 self.eventsPublisher.send(event)

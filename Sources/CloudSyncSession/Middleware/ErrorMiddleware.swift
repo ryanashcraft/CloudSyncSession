@@ -118,17 +118,20 @@ struct ErrorMiddleware: Middleware {
                 case let .modify(operation):
                     // Supported modify partial failures: batchRequestFailed and serverRecordChanged
 
-                    guard let partialErrors = ckError.partialErrorsByItemID as? [CKRecord.ID: Error] else {
+                    guard let partialErrorsByRecordID = ckError.partialErrorsByItemID as? [CKRecord.ID: Error] else {
                         return .halt(error)
                     }
 
-                    let recordIDsNotSavedOrDeleted = Set(partialErrors.keys)
+                    let recordIDsNotSavedOrDeleted = Set(partialErrorsByRecordID.keys)
+
+                    let partialErrors = partialErrorsByRecordID.compactMap { $0.value as? CKError }
+
+                    if ckError.indicatesShouldBackoff {
+                        return .retry(work, error, ckError.suggestedBackoffSeconds)
+                    }
 
                     let unhandleableErrorsByItemID = partialErrors
-                        .filter { _, error in
-                            guard let error = error as? CKError else {
-                                return true
-                            }
+                        .filter { error in
 
                             switch error.code {
                             case .batchRequestFailed, .serverRecordChanged, .unknownItem:
@@ -145,7 +148,7 @@ struct ErrorMiddleware: Middleware {
 
                     // All IDs for records that are unknown by the container (probably deleted by another client)
                     let unknownItemRecordIDs = Set(
-                        partialErrors
+                        partialErrorsByRecordID
                             .filter { _, error in
                                 if let error = error as? CKError, error.code == .unknownItem {
                                     return true
@@ -158,7 +161,7 @@ struct ErrorMiddleware: Middleware {
 
                     // All IDs for records that failed to be modified due to some other error in the batch modify operation
                     let batchRequestFailedRecordIDs = Set(
-                        partialErrors
+                        partialErrorsByRecordID
                             .filter { _, error in
                                 if let error = error as? CKError, error.code == .batchRequestFailed {
                                     return true
@@ -171,14 +174,13 @@ struct ErrorMiddleware: Middleware {
 
                     // All errors for records that failed because there was a conflict
                     let serverRecordChangedErrors = partialErrors
-                        .filter { _, error in
-                            if let error = error as? CKError, error.code == .serverRecordChanged {
+                        .filter { error in
+                            if error.code == .serverRecordChanged {
                                 return true
                             }
 
                             return false
                         }
-                        .values
 
                     // Resolved records
                     let resolvedConflictsToSave = serverRecordChangedErrors
@@ -330,7 +332,7 @@ struct ErrorMiddleware: Middleware {
     }
 }
 
-internal extension CKRecord {
+extension CKRecord {
     func removeAllFields() {
         let encryptedKeys = Set(encryptedValues.allKeys())
 

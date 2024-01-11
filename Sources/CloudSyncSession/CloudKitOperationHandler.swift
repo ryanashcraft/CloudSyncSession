@@ -23,10 +23,11 @@
 
 import CloudKit
 import os.log
+import PID
 
 /// An object that handles all of the key operations (fetch, modify, create zone, and create subscription) using the standard CloudKit APIs.
 public class CloudKitOperationHandler: OperationHandler {
-    static let minThrottleDuration: TimeInterval = 2
+    static let minThrottleDuration: TimeInterval = 1
     static let maxThrottleDuration: TimeInterval = 60 * 10
 
     let database: CKDatabase
@@ -35,6 +36,15 @@ public class CloudKitOperationHandler: OperationHandler {
     let log: OSLog
     let savePolicy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged
     let qos: QualityOfService = .userInitiated
+    var rateLimitController = RateLimitPIDController(
+        kp: 2,
+        ki: 0.05,
+        kd: 0.02,
+        errorWindowSize: 20,
+        targetSuccessRate: 0.96,
+        initialRateLimit: 2,
+        outcomeWindowSize: 1
+    )
 
     private let operationQueue: OperationQueue = {
         let queue = OperationQueue()
@@ -45,9 +55,11 @@ public class CloudKitOperationHandler: OperationHandler {
 
     var throttleDuration: TimeInterval {
         didSet {
+            nextOperationDeadline = DispatchTime.now() + throttleDuration
+
             if throttleDuration > oldValue {
                 os_log(
-                    "Increasing throttle duration from %{public}.0f seconds to %{public}.0f seconds",
+                    "Increasing throttle duration from %{public}.1f seconds to %{public}.1f seconds",
                     log: log,
                     type: .default,
                     oldValue,
@@ -55,7 +67,7 @@ public class CloudKitOperationHandler: OperationHandler {
                 )
             } else if throttleDuration < oldValue {
                 os_log(
-                    "Decreasing throttle duration from %{public}.0f seconds to %{public}.0f seconds",
+                    "Decreasing throttle duration from %{public}.1f seconds to %{public}.1f seconds",
                     log: log,
                     type: .default,
                     oldValue,
@@ -65,23 +77,45 @@ public class CloudKitOperationHandler: OperationHandler {
         }
     }
 
-    var lastOperationTime: DispatchTime?
+    var nextOperationDeadline: DispatchTime?
 
     public init(database: CKDatabase, zoneID: CKRecordZone.ID, subscriptionID: String, log: OSLog) {
         self.database = database
         self.zoneID = zoneID
         self.subscriptionID = subscriptionID
         self.log = log
-        throttleDuration = Self.minThrottleDuration
+        throttleDuration = rateLimitController.rateLimit
     }
 
     private func queueOperation(_ operation: Operation) {
-        let deadline: DispatchTime = (lastOperationTime ?? DispatchTime.now()) + throttleDuration
+        let deadline: DispatchTime = nextOperationDeadline ?? DispatchTime.now()
 
         DispatchQueue.main.asyncAfter(deadline: deadline) {
             self.operationQueue.addOperation(operation)
-            self.operationQueue.addOperation {
-                self.lastOperationTime = DispatchTime.now()
+        }
+    }
+
+    private func onOperationSuccess() {
+        rateLimitController.record(outcome: .success)
+        throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
+    }
+
+    private func onOperationError(_ error: Error) {
+        if let ckError = error as? CKError {
+            rateLimitController.record(outcome: ckError.indicatesShouldBackoff ? .failure : .success)
+
+            if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
+                os_log(
+                    "CloudKit error suggests retrying after %{public}.1f seconds",
+                    log: log,
+                    type: .default,
+                    suggestedBackoffSeconds
+                )
+
+                // Respect the amount suggested for the next operation
+                throttleDuration = suggestedBackoffSeconds
+            } else {
+                throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
             }
         }
     }
@@ -106,15 +140,11 @@ public class CloudKitOperationHandler: OperationHandler {
 
         operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
             if let error = error {
-                if let ckError = error as? CKError {
-                    // Use the suggested retry delay, or exponentially increase throttle duration if not provided
-                    self.throttleDuration = min(Self.maxThrottleDuration, ckError.retryAfterSeconds ?? (self.throttleDuration * 2))
-                }
+                self.onOperationError(error)
 
                 completion(.failure(error))
             } else {
-                // On success, back off of the throttle duration by 66%. Backing off too quickly can result in thrashing.
-                self.throttleDuration = max(Self.minThrottleDuration, self.throttleDuration * 2 / 3)
+                self.onOperationSuccess()
 
                 completion(.success(ModifyOperation.Response(savedRecords: serverRecords ?? [], deletedRecordIDs: deletedRecordIDs ?? [])))
             }
@@ -199,17 +229,13 @@ public class CloudKitOperationHandler: OperationHandler {
                     String(describing: error)
                 )
 
-                if let ckError = error as? CKError {
-                    // Use the suggested retry delay, or exponentially increase throttle duration if not provided
-                    self.throttleDuration = min(Self.maxThrottleDuration, ckError.retryAfterSeconds ?? (self.throttleDuration * 2))
-                }
+                onOperationError(error)
 
                 completion(.failure(error))
             } else {
                 os_log("Finished fetching record zone changes", log: self.log, type: .info)
 
-                // On success, back off of the throttle duration by 66%. Backing off too quickly can result in thrashing.
-                self.throttleDuration = max(Self.minThrottleDuration, self.throttleDuration * 2 / 3)
+                onOperationSuccess()
 
                 completion(
                     .success(
