@@ -42,7 +42,7 @@ public class CloudKitOperationHandler: OperationHandler {
         kd: 0.02,
         errorWindowSize: 20,
         targetSuccessRate: 0.96,
-        initialRateLimit: 5,
+        initialRateLimit: 2,
         outcomeWindowSize: 1
     )
 
@@ -84,7 +84,7 @@ public class CloudKitOperationHandler: OperationHandler {
         self.zoneID = zoneID
         self.subscriptionID = subscriptionID
         self.log = log
-        throttleDuration = Self.minThrottleDuration
+        throttleDuration = rateLimitController.rateLimit
     }
 
     private func queueOperation(_ operation: Operation) {
