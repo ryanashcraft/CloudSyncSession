@@ -39,11 +39,11 @@ public class CloudKitOperationHandler: OperationHandler {
     var rateLimitController = RateLimitPIDController(
         kp: 2,
         ki: 0.05,
-        kd: 0.01,
+        kd: 0.02,
         errorWindowSize: 20,
         targetSuccessRate: 0.98,
         initialRateLimit: 5,
-        outcomeWindowSize: 2
+        outcomeWindowSize: 1
     )
 
     private let operationQueue: OperationQueue = {
@@ -106,21 +106,14 @@ public class CloudKitOperationHandler: OperationHandler {
 
     private func onOperationError(_ error: Error) {
         if let ckError = error as? CKError {
-            if let retryAfterSeconds = ckError.retryAfterSeconds {
-                self.rateLimitController = RateLimitPIDController(
-                    kp: 2,
-                    ki: 0.05,
-                    kd: 0.02,
-                    errorWindowSize: 20,
-                    targetSuccessRate: 0.98,
-                    initialRateLimit: retryAfterSeconds,
-                    outcomeWindowSize: 1
-                )
-            } else {
-                rateLimitController.record(outcome: ckError.shouldRateLimit ? .failure : .success)
-            }
+            rateLimitController.record(outcome: ckError.shouldRateLimit ? .failure : .success)
 
-            throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
+            if let retryAfterSeconds = ckError.retryAfterSeconds {
+                // Respect the retryAfterSeconds amount for the next operation
+                throttleDuration = retryAfterSeconds
+            } else {
+                throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
+            }
         }
     }
 
