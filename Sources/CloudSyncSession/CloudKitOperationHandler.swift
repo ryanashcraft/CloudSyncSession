@@ -55,6 +55,8 @@ public class CloudKitOperationHandler: OperationHandler {
 
     var throttleDuration: TimeInterval {
         didSet {
+            nextOperationDeadline = DispatchTime.now() + throttleDuration
+
             if throttleDuration > oldValue {
                 os_log(
                     "Increasing throttle duration from %{public}.0f seconds to %{public}.0f seconds",
@@ -75,6 +77,7 @@ public class CloudKitOperationHandler: OperationHandler {
         }
     }
 
+    var nextOperationDeadline: DispatchTime?
     var lastOperationTime: DispatchTime?
 
     public init(database: CKDatabase, zoneID: CKRecordZone.ID, subscriptionID: String, log: OSLog) {
@@ -86,7 +89,7 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 
     private func queueOperation(_ operation: Operation) {
-        let deadline: DispatchTime = (lastOperationTime ?? DispatchTime.now()) + throttleDuration
+        let deadline: DispatchTime = nextOperationDeadline ?? DispatchTime.now()
 
         DispatchQueue.main.asyncAfter(deadline: deadline) {
             self.operationQueue.addOperation(operation)
@@ -107,11 +110,11 @@ public class CloudKitOperationHandler: OperationHandler {
                 self.rateLimitController = RateLimitPIDController(
                     kp: 2,
                     ki: 0.05,
-                    kd: 0.01,
+                    kd: 0.02,
                     errorWindowSize: 20,
                     targetSuccessRate: 0.98,
                     initialRateLimit: retryAfterSeconds,
-                    outcomeWindowSize: 2
+                    outcomeWindowSize: 1
                 )
             } else {
                 rateLimitController.record(outcome: ckError.shouldRateLimit ? .failure : .success)
