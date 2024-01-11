@@ -1,7 +1,18 @@
 import CloudKit
 
 extension CKError {
-    var shouldRateLimit: Bool {
+    var suggestedBackoffSeconds: TimeInterval? {
+        if let retryAfterSeconds {
+            return retryAfterSeconds
+        }
+
+        return partialErrorsByItemID?
+            .values
+            .compactMap { ($0 as? CKError)?.retryAfterSeconds }
+            .max()
+    }
+
+    var indicatesShouldBackoff: Bool {
         if retryAfterSeconds != nil {
             return true
         }
@@ -17,7 +28,7 @@ extension CKError {
             }
 
             let partialErrors = partialErrorsByRecordID.compactMap { $0.value as? CKError }
-            let allErrorsAreRetryable = partialErrors.allSatisfy(\.shouldRateLimit)
+            let allErrorsAreRetryable = partialErrors.allSatisfy(\.indicatesShouldBackoff)
 
             return allErrorsAreRetryable
         default:

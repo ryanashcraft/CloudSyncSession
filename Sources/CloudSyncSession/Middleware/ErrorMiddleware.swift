@@ -126,10 +126,8 @@ struct ErrorMiddleware: Middleware {
 
                     let partialErrors = partialErrorsByRecordID.compactMap { $0.value as? CKError }
 
-                    if ckError.shouldRateLimit {
-                        let retryAfter = partialErrors.compactMap { $0.retryAfterSeconds }.max()
-
-                        return .retry(work, error, retryAfter)
+                    if ckError.indicatesShouldBackoff {
+                        return .retry(work, error, ckError.suggestedBackoffSeconds)
                     }
 
                     let unhandleableErrorsByItemID = partialErrors

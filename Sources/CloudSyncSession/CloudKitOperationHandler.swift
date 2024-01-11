@@ -102,11 +102,18 @@ public class CloudKitOperationHandler: OperationHandler {
 
     private func onOperationError(_ error: Error) {
         if let ckError = error as? CKError {
-            rateLimitController.record(outcome: ckError.shouldRateLimit ? .failure : .success)
+            rateLimitController.record(outcome: ckError.indicatesShouldBackoff ? .failure : .success)
 
-            if let retryAfterSeconds = ckError.retryAfterSeconds {
-                // Respect the retryAfterSeconds amount for the next operation
-                throttleDuration = retryAfterSeconds
+            if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
+                os_log(
+                    "CloudKit error suggests retrying after %{public}.0f seconds",
+                    log: log,
+                    type: .default,
+                    suggestedBackoffSeconds
+                )
+
+                // Respect the amount suggested for the next operation
+                throttleDuration = suggestedBackoffSeconds
             } else {
                 throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
             }
