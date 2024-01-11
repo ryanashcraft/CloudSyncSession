@@ -95,19 +95,12 @@ public struct FetchOperation: Identifiable, SyncOperation {
         public let changedRecords: [CKRecord]
         public let deletedRecordIDs: [CKRecord.ID]
         public let hasMore: Bool
-
-        public init(changeToken: CKServerChangeToken? = nil, changedRecords: [CKRecord], deletedRecordIDs: [CKRecord.ID], hasMore: Bool) {
-            self.changeToken = changeToken
-            self.changedRecords = changedRecords
-            self.deletedRecordIDs = deletedRecordIDs
-            self.hasMore = hasMore
-        }
     }
 
     public let id = UUID()
 
-    public internal(set) var changeToken: CKServerChangeToken?
-    public internal(set) var retryCount: Int = 0
+    var changeToken: CKServerChangeToken?
+    var retryCount: Int = 0
 
     public init(changeToken: CKServerChangeToken?) {
         self.changeToken = changeToken
@@ -118,20 +111,15 @@ public struct ModifyOperation: Identifiable, SyncOperation {
     public struct Response {
         public let savedRecords: [CKRecord]
         public let deletedRecordIDs: [CKRecord.ID]
-
-        public init(savedRecords: [CKRecord], deletedRecordIDs: [CKRecord.ID]) {
-            self.savedRecords = savedRecords
-            self.deletedRecordIDs = deletedRecordIDs
-        }
     }
 
     public let id = UUID()
     public let checkpointID: UUID?
     public let userInfo: [String: Any]?
 
-    public internal(set) var records: [CKRecord]
-    public internal(set) var recordIDsToDelete: [CKRecord.ID]
-    public internal(set) var retryCount: Int = 0
+    var records: [CKRecord]
+    var recordIDsToDelete: [CKRecord.ID]
+    var retryCount: Int = 0
 
     public init(records: [CKRecord], recordIDsToDelete: [CKRecord.ID], checkpointID: UUID?, userInfo: [String: Any]?) {
         self.records = records
@@ -167,8 +155,8 @@ public struct ModifyOperation: Identifiable, SyncOperation {
 }
 
 public struct CreateZoneOperation: Identifiable, SyncOperation {
-    public internal(set) var zoneID: CKRecordZone.ID
-    public internal(set) var retryCount: Int = 0
+    var zoneID: CKRecordZone.ID
+    var retryCount: Int = 0
 
     public let id = UUID()
 
@@ -178,8 +166,8 @@ public struct CreateZoneOperation: Identifiable, SyncOperation {
 }
 
 public struct CreateSubscriptionOperation: Identifiable, SyncOperation {
-    public internal(set) var zoneID: CKRecordZone.ID
-    public internal(set) var retryCount: Int = 0
+    var zoneID: CKRecordZone.ID
+    var retryCount: Int = 0
 
     public let id = UUID()
 
