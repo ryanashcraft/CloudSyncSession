@@ -23,15 +23,9 @@
 
 import CloudKit
 import Foundation
-import os.log
 
 struct ErrorMiddleware: Middleware {
     var session: CloudSyncSession
-
-    private let log = OSLog(
-        subsystem: "com.ryanashcraft.CloudSyncSession",
-        category: "Error Middleware"
-    )
 
     func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
         switch event {
@@ -48,13 +42,7 @@ struct ErrorMiddleware: Middleware {
 
     func mapErrorToEvent(error: Error, work: SyncWork, zoneID: CKRecordZone.ID) -> SyncEvent? {
         if let ckError = error as? CKError {
-            os_log(
-                "Handling CloudKit error (code %{public}d): %{public}@",
-                log: log,
-                type: .error,
-                ckError.errorCode,
-                ckError.localizedDescription
-            )
+            Log.error.error("Handling CloudKit error (code \(ckError.errorCode)): \(ckError.localizedDescription)")
 
             switch ckError.code {
             case .notAuthenticated,
@@ -190,11 +178,7 @@ struct ErrorMiddleware: Middleware {
 
                     if resolvedConflictsToSave.count != serverRecordChangedErrors.count {
                         // Abort if couldn't handle conflict for some reason
-                        os_log(
-                            "Aborting since count of resolved records not equal to number of server record changed errors",
-                            log: log,
-                            type: .error
-                        )
+                        Log.error.error("Aborting since count of resolved records not equal to number of server record changed errors")
 
                         return .halt(error)
                     }
@@ -252,53 +236,30 @@ struct ErrorMiddleware: Middleware {
 
     func resolveConflict(error: Error) -> CKRecord? {
         guard let effectiveError = error as? CKError else {
-            os_log(
-                "resolveConflict called on an error that was not a CKError. The error was %{public}@",
-                log: log,
-                type: .fault,
-                String(describing: self)
-            )
+            Log.error.critical("resolveConflict called on an error that was not a CKError. The error was \(String(describing: self))")
 
             return nil
         }
 
         guard effectiveError.code == .serverRecordChanged else {
-            os_log(
-                "resolveConflict called on a CKError that was not a serverRecordChanged error. The error was %{public}@",
-                log: log,
-                type: .fault,
-                String(describing: effectiveError)
-            )
+            Log.error.critical("resolveConflict called on a CKError that was not a serverRecordChanged error. The error was \(String(describing: effectiveError))")
 
             return nil
         }
 
         guard let clientRecord = effectiveError.clientRecord else {
-            os_log(
-                "Failed to obtain client record from serverRecordChanged error. The error was %{public}@",
-                log: log,
-                type: .fault,
-                String(describing: effectiveError)
-            )
+            Log.error.critical("Failed to obtain client record from serverRecordChanged error. The error was \(String(describing: effectiveError))")
 
             return nil
         }
 
         guard let serverRecord = effectiveError.serverRecord else {
-            os_log(
-                "Failed to obtain server record from serverRecordChanged error. The error was %{public}@",
-                log: log,
-                type: .fault,
-                String(describing: effectiveError)
-            )
+            Log.error.critical("Failed to obtain server record from serverRecordChanged error. The error was \(String(describing: effectiveError))")
 
             return nil
         }
 
-        os_log(
-            "CloudKit conflict with record of type %{public}@. Running conflict resolver", log: log,
-            type: .error, serverRecord.recordType
-        )
+        Log.error.error("CloudKit conflict with record of type \(serverRecord.recordType). Running conflict resolver")
 
         guard let resolveConflict = session.resolveConflict else {
             return nil

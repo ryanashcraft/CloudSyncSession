@@ -22,7 +22,6 @@
 //
 
 import CloudKit
-import os.log
 import PID
 
 /// An object that handles all of the key operations (fetch, modify, create zone, and create subscription) using the standard CloudKit APIs.
@@ -33,7 +32,6 @@ public class CloudKitOperationHandler: OperationHandler {
     let database: CKDatabase
     let zoneID: CKRecordZone.ID
     let subscriptionID: String
-    let log: OSLog
     let savePolicy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged
     let qos: QualityOfService = .userInitiated
     var rateLimitController = RateLimitPIDController(
@@ -58,32 +56,19 @@ public class CloudKitOperationHandler: OperationHandler {
             nextOperationDeadline = DispatchTime.now() + throttleDuration
 
             if throttleDuration > oldValue {
-                os_log(
-                    "Increasing throttle duration from %{public}.1f seconds to %{public}.1f seconds",
-                    log: log,
-                    type: .default,
-                    oldValue,
-                    throttleDuration
-                )
+                Log.operations.info("Increasing throttle duration from \(Int(oldValue)) seconds to \(Int(throttleDuration)) seconds")
             } else if throttleDuration < oldValue {
-                os_log(
-                    "Decreasing throttle duration from %{public}.1f seconds to %{public}.1f seconds",
-                    log: log,
-                    type: .default,
-                    oldValue,
-                    throttleDuration
-                )
+                Log.operations.info("Decreasing throttle duration from \(Int(oldValue)) seconds to \(Int(throttleDuration)) seconds")
             }
         }
     }
 
     var nextOperationDeadline: DispatchTime?
 
-    public init(database: CKDatabase, zoneID: CKRecordZone.ID, subscriptionID: String, log: OSLog) {
+    public init(database: CKDatabase, zoneID: CKRecordZone.ID, subscriptionID: String) {
         self.database = database
         self.zoneID = zoneID
         self.subscriptionID = subscriptionID
-        self.log = log
         throttleDuration = rateLimitController.rateLimit
     }
 
@@ -105,12 +90,7 @@ public class CloudKitOperationHandler: OperationHandler {
             rateLimitController.record(outcome: ckError.indicatesShouldBackoff ? .failure : .success)
 
             if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
-                os_log(
-                    "CloudKit error suggests retrying after %{public}.1f seconds",
-                    log: log,
-                    type: .default,
-                    suggestedBackoffSeconds
-                )
+                Log.operations.info("CloudKit error suggests retrying after \(suggestedBackoffSeconds) seconds")
 
                 // Respect the amount suggested for the next operation
                 throttleDuration = suggestedBackoffSeconds
@@ -140,6 +120,7 @@ public class CloudKitOperationHandler: OperationHandler {
 
         operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
             if let error = error {
+                Log.operations.error("Failed to modify records: \(error)")
                 self.onOperationError(error)
 
                 completion(.failure(error))
@@ -185,7 +166,7 @@ public class CloudKitOperationHandler: OperationHandler {
                 return
             }
 
-            os_log("Received new change token", log: self.log, type: .debug)
+            Log.operations.debug("Received new change token")
 
             token = newToken
         }
@@ -206,11 +187,11 @@ public class CloudKitOperationHandler: OperationHandler {
             hasMore = newHasMore
 
             if let newToken = newToken {
-                os_log("Received new change token", log: self.log, type: .debug)
+                Log.operations.debug("Received new change token")
 
                 token = newToken
             } else {
-                os_log("Confusingly received nil token", log: self.log, type: .debug)
+                Log.operations.debug("Confusingly received nil token")
 
                 token = nil
             }
@@ -222,18 +203,13 @@ public class CloudKitOperationHandler: OperationHandler {
             }
 
             if let error = error {
-                os_log(
-                    "Failed to fetch record zone changes: %{public}@",
-                    log: self.log,
-                    type: .error,
-                    String(describing: error)
-                )
+                Log.operations.error("Failed to fetch record zone changes: \(error)")
 
                 onOperationError(error)
 
                 completion(.failure(error))
             } else {
-                os_log("Finished fetching record zone changes", log: self.log, type: .info)
+                Log.operations.info("Finished fetching record zone changes")
 
                 onOperationSuccess()
 
@@ -351,33 +327,20 @@ private extension CloudKitOperationHandler {
 
         operation.fetchRecordZonesCompletionBlock = { ids, error in
             if let error = error {
-                os_log(
-                    "Failed to check for custom zone existence: %{public}@",
-                    log: self.log,
-                    type: .error,
-                    String(describing: error)
-                )
+                Log.operations.error("Failed to check for custom zone existence: \(String(describing: error))")
 
                 completion(.failure(error))
 
                 return
             } else if (ids ?? [:]).isEmpty {
-                os_log(
-                    "Custom zone reported as existing, but it doesn't exist",
-                    log: self.log,
-                    type: .error
-                )
+                Log.operations.error("Custom zone reported as existing, but it doesn't exist")
 
                 completion(.success(false))
 
                 return
             }
 
-            os_log(
-                "Custom zone exists",
-                log: self.log,
-                type: .error
-            )
+            Log.operations.debug("Custom zone exists")
 
             completion(.success(true))
         }
@@ -397,19 +360,14 @@ private extension CloudKitOperationHandler {
 
         operation.modifyRecordZonesCompletionBlock = { _, _, error in
             if let error = error {
-                os_log(
-                    "Failed to create custom zone: %{public}@",
-                    log: self.log,
-                    type: .error,
-                    String(describing: error)
-                )
+                Log.operations.error("Failed to create custom zone: \(String(describing: error))")
 
                 completion(.failure(error))
 
                 return
             }
 
-            os_log("Created custom zone", log: self.log, type: .debug)
+            Log.operations.debug("Created custom zone")
 
             completion(.success(true))
         }
@@ -425,29 +383,20 @@ private extension CloudKitOperationHandler {
 
         operation.fetchSubscriptionCompletionBlock = { ids, error in
             if let error = error {
-                os_log(
-                    "Failed to check for subscription existence: %{public}@",
-                    log: self.log,
-                    type: .error,
-                    String(describing: error)
-                )
+                Log.operations.error("Failed to check for subscription existence: \(String(describing: error))")
 
                 completion(.failure(error))
 
                 return
             } else if (ids ?? [:]).isEmpty {
-                os_log(
-                    "Subscription reported as existing, but it doesn't exist",
-                    log: self.log,
-                    type: .error
-                )
+                Log.operations.error("Subscription reported as existing, but it doesn't exist")
 
                 completion(.success(false))
 
                 return
             }
 
-            os_log("Subscription exists", log: self.log, type: .debug)
+            Log.operations.debug("Subscription exists")
 
             completion(.success(true))
         }
@@ -476,19 +425,14 @@ private extension CloudKitOperationHandler {
 
         operation.modifySubscriptionsCompletionBlock = { _, _, error in
             if let error = error {
-                os_log(
-                    "Failed to create subscription: %{public}@",
-                    log: self.log,
-                    type: .error,
-                    String(describing: error)
-                )
+                Log.operations.error("Failed to create subscription: \(String(describing: error))")
 
                 completion(.failure(error))
 
                 return
             }
 
-            os_log("Created subscription", log: self.log, type: .debug)
+            Log.operations.debug("Created subscription")
 
             completion(.success(true))
         }

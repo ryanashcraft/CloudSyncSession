@@ -1,5 +1,3 @@
-import os.log
-
 struct SplittingMiddleware: Middleware {
     var session: CloudSyncSession
 

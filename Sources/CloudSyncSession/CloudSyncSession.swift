@@ -1,6 +1,5 @@
 import CloudKit
 import Combine
-import os.log
 
 public typealias ConflictResolver = (CKRecord, CKRecord) -> CKRecord?
 public typealias ChangeTokenExpiredResolver = () -> CKServerChangeToken?
