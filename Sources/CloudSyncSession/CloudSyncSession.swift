@@ -92,6 +92,11 @@ public class CloudSyncSession {
     public func reset() {
         state = SyncState()
     }
+    
+    /// Leave sharing
+    public func leaveSharing(completion: @escaping (Result<Bool, Error>) -> Void) {
+        operationHandler.leaveSharing(completion: completion)
+    }
 
     /// Queue a fetch operation.
     public func fetch(_ operation: FetchOperation) {
