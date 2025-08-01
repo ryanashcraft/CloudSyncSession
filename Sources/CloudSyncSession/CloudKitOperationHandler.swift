@@ -142,7 +142,7 @@ public class CloudKitOperationHandler: OperationHandler {
         var hasMore = false
         var token: CKServerChangeToken? = fetchOperation.changeToken
         var changedRecords: [CKRecord] = []
-        var deletedRecordIDs: [CKRecord.ID] = []
+        var deletedRecordIDs: [CKRecord.RecordType: [CKRecord.ID]] = [:]
 
         let operation = CKFetchRecordZoneChangesOperation()
 
@@ -175,8 +175,12 @@ public class CloudKitOperationHandler: OperationHandler {
             changedRecords.append(record)
         }
 
-        operation.recordWithIDWasDeletedBlock = { recordID, _ in
-            deletedRecordIDs.append(recordID)
+        operation.recordWithIDWasDeletedBlock = { recordID, recordType in
+            if deletedRecordIDs[recordType] != nil {
+                deletedRecordIDs[recordType]?.append(recordID)
+            } else {
+                deletedRecordIDs[recordType] = [recordID]
+            }
         }
 
         operation.recordZoneFetchCompletionBlock = { [weak self] _, newToken, _, newHasMore, _ in
