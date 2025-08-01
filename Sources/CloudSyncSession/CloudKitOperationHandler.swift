@@ -408,10 +408,10 @@ private extension CloudKitOperationHandler {
     }
 
     func createSubscription(zoneID: CKRecordZone.ID, subscriptionID: String, completion: @escaping (Result<Bool, Error>) -> Void) {
-        let subscription = CKRecordZoneSubscription(
-            zoneID: zoneID,
-            subscriptionID: subscriptionID
-        )
+        
+        var subscription: CKSubscription = database.databaseScope == .shared ?
+            CKDatabaseSubscription(subscriptionID: subscriptionID) :
+            CKRecordZoneSubscription(zoneID: zoneID,subscriptionID: subscriptionID)
 
         let notificationInfo = CKSubscription.NotificationInfo()
         notificationInfo.shouldSendContentAvailable = true
