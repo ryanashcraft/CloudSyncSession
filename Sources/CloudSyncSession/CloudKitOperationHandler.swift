@@ -171,44 +171,43 @@ public class CloudKitOperationHandler: OperationHandler {
             token = newToken
         }
 
-        operation.recordChangedBlock = { record in
-            changedRecords.append(record)
+        operation.recordWasChangedBlock = { _, result in
+            switch result {
+            case let .success(record):
+                changedRecords.append(record)
+            case let .failure(error):
+                Log.operations.error("Failed to fetch record: \(error)")
+            }
         }
 
         operation.recordWithIDWasDeletedBlock = { recordID, _ in
             deletedRecordIDs.append(recordID)
         }
 
-        operation.recordZoneFetchCompletionBlock = { [weak self] _, newToken, _, newHasMore, _ in
+        operation.recordZoneFetchResultBlock = { [weak self] _, result in
             guard let self = self else {
                 return
             }
 
-            hasMore = newHasMore
+            switch result {
+            case let .success((newToken, _, newHasMore)):
+                hasMore = newHasMore
 
-            if let newToken = newToken {
                 Log.operations.debug("Received new change token")
 
                 token = newToken
-            } else {
-                Log.operations.debug("Confusingly received nil token")
-
-                token = nil
+            case let .failure(error):
+                Log.operations.error("Failed to fetch record zone: \(error)")
             }
         }
 
-        operation.fetchRecordZoneChangesCompletionBlock = { [weak self] error in
+        operation.fetchRecordZoneChangesResultBlock = { [weak self] result in
             guard let self = self else {
                 return
             }
 
-            if let error = error {
-                Log.operations.error("Failed to fetch record zone changes: \(error)")
-
-                onOperationError(error)
-
-                completion(.failure(error))
-            } else {
+            switch result {
+            case .success:
                 Log.operations.info("Finished fetching record zone changes")
 
                 onOperationSuccess()
@@ -223,6 +222,12 @@ public class CloudKitOperationHandler: OperationHandler {
                         )
                     )
                 )
+            case let .failure(error):
+                Log.operations.error("Failed to fetch record zone changes: \(error)")
+
+                onOperationError(error)
+
+                completion(.failure(error))
             }
         }
 
