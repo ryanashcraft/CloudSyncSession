@@ -148,14 +148,14 @@ public class CloudKitOperationHandler: OperationHandler {
 
         let config = CKFetchRecordZoneChangesOperation.ZoneConfiguration(
             previousServerChangeToken: token,
-            resultsLimit: nil,
+            resultsLimit: 200,
             desiredKeys: nil
         )
 
         operation.configurationsByRecordZoneID = [zoneID: config]
 
         operation.recordZoneIDs = [zoneID]
-        operation.fetchAllChanges = true
+        operation.fetchAllChanges = false
 
         operation.recordZoneChangeTokensUpdatedBlock = { [weak self] _, newToken, _ in
             guard let self = self else {
