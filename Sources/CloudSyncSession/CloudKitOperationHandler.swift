@@ -26,7 +26,7 @@ import PID
 
 /// An object that handles all of the key operations (fetch, modify, create zone, and create subscription) using the standard CloudKit APIs.
 public class CloudKitOperationHandler: OperationHandler {
-    static let minThrottleDuration: TimeInterval = 1
+    static let minThrottleDuration: TimeInterval = 0.25
     static let maxThrottleDuration: TimeInterval = 60 * 10
 
     let database: CKDatabase
@@ -40,7 +40,7 @@ public class CloudKitOperationHandler: OperationHandler {
         kd: 0.02,
         errorWindowSize: 20,
         targetSuccessRate: 0.96,
-        initialRateLimit: 2,
+        initialRateLimit: 1,
         outcomeWindowSize: 1
     )
 
@@ -56,9 +56,9 @@ public class CloudKitOperationHandler: OperationHandler {
             nextOperationDeadline = DispatchTime.now() + throttleDuration
 
             if throttleDuration > oldValue {
-                Log.operations.info("Increasing throttle duration from \(Int(oldValue)) seconds to \(Int(throttleDuration)) seconds")
+                Log.operations.info("Increasing throttle duration from \(String(format: "%.2f", oldValue))s to \(String(format: "%.2f", throttleDuration))s")
             } else if throttleDuration < oldValue {
-                Log.operations.info("Decreasing throttle duration from \(Int(oldValue)) seconds to \(Int(throttleDuration)) seconds")
+                Log.operations.info("Decreasing throttle duration from \(String(format: "%.2f", oldValue))s to \(String(format: "%.2f", throttleDuration))s")
             }
         }
     }
@@ -165,7 +165,7 @@ public class CloudKitOperationHandler: OperationHandler {
 
         let config = CKFetchRecordZoneChangesOperation.ZoneConfiguration(
             previousServerChangeToken: token,
-            resultsLimit: 200,
+            resultsLimit: maxRecommendedRecordsPerFetchOperation,
             desiredKeys: nil
         )
 
