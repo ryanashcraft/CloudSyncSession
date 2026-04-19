@@ -133,20 +133,16 @@ public class CloudKitOperationHandler: OperationHandler {
             }
         }
 
-        operation.modifyRecordsResultBlock = { [weak self] result in
-            guard let self = self else {
-                return
-            }
-
+        operation.modifyRecordsResultBlock = { result in
             switch result {
             case .success:
-                onOperationSuccess()
+                self.onOperationSuccess()
 
                 completion(.success(ModifyOperation.Response(savedRecords: savedRecords, deletedRecordIDs: deletedRecordIDs)))
             case let .failure(error):
                 Log.operations.error("Failed to modify records: \(error)")
 
-                onOperationError(error)
+                self.onOperationError(error)
 
                 completion(.failure(error))
             }
@@ -214,16 +210,12 @@ public class CloudKitOperationHandler: OperationHandler {
             }
         }
 
-        operation.fetchRecordZoneChangesResultBlock = { [weak self] result in
-            guard let self = self else {
-                return
-            }
-
+        operation.fetchRecordZoneChangesResultBlock = { result in
             switch result {
             case .success:
                 Log.operations.info("Finished fetching record zone changes")
 
-                onOperationSuccess()
+                self.onOperationSuccess()
 
                 completion(
                     .success(
@@ -238,7 +230,7 @@ public class CloudKitOperationHandler: OperationHandler {
             case let .failure(error):
                 Log.operations.error("Failed to fetch record zone changes: \(error)")
 
-                onOperationError(error)
+                self.onOperationError(error)
 
                 completion(.failure(error))
             }
@@ -259,14 +251,7 @@ public class CloudKitOperationHandler: OperationHandler {
                     case .partialFailure,
                          .zoneNotFound,
                          .userDeletedZone:
-                        self.createCustomZone(zoneID: self.zoneID) { result in
-                            switch result {
-                            case let .failure(error):
-                                completion(.failure(error))
-                            case let .success(didCreateZone):
-                                completion(.success(didCreateZone))
-                            }
-                        }
+                        self.createCustomZone(zoneID: self.zoneID, completion: completion)
 
                         return
                     default:
@@ -282,14 +267,7 @@ public class CloudKitOperationHandler: OperationHandler {
                     return
                 }
 
-                self.createCustomZone(zoneID: self.zoneID) { result in
-                    switch result {
-                    case let .failure(error):
-                        completion(.failure(error))
-                    case let .success(didCreateZone):
-                        completion(.success(didCreateZone))
-                    }
-                }
+                self.createCustomZone(zoneID: self.zoneID, completion: completion)
             }
         }
     }
@@ -303,14 +281,7 @@ public class CloudKitOperationHandler: OperationHandler {
                     case .partialFailure,
                          .zoneNotFound,
                          .userDeletedZone:
-                        self.createSubscription(zoneID: self.zoneID, subscriptionID: self.subscriptionID) { result in
-                            switch result {
-                            case let .failure(error):
-                                completion(.failure(error))
-                            case let .success(didCreateSubscription):
-                                completion(.success(didCreateSubscription))
-                            }
-                        }
+                        self.createSubscription(zoneID: self.zoneID, subscriptionID: self.subscriptionID, completion: completion)
 
                         return
                     default:
@@ -326,14 +297,7 @@ public class CloudKitOperationHandler: OperationHandler {
                     return
                 }
 
-                self.createSubscription(zoneID: self.zoneID, subscriptionID: self.subscriptionID) { result in
-                    switch result {
-                    case let .failure(error):
-                        completion(.failure(error))
-                    case let .success(didCreateZone):
-                        completion(.success(didCreateZone))
-                    }
-                }
+                self.createSubscription(zoneID: self.zoneID, subscriptionID: self.subscriptionID, completion: completion)
             }
         }
     }
@@ -343,26 +307,12 @@ private extension CloudKitOperationHandler {
     func checkCustomZone(zoneID: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
         let operation = CKFetchRecordZonesOperation(recordZoneIDs: [zoneID])
 
-        var foundZone = false
-
-        operation.perRecordZoneResultBlock = { _, result in
-            if case .success = result {
-                foundZone = true
-            }
-        }
-
         operation.fetchRecordZonesResultBlock = { result in
             switch result {
             case .success:
-                if foundZone {
-                    Log.operations.debug("Custom zone exists")
+                Log.operations.debug("Custom zone exists")
 
-                    completion(.success(true))
-                } else {
-                    Log.operations.error("Custom zone reported as existing, but it doesn't exist")
-
-                    completion(.success(false))
-                }
+                completion(.success(true))
             case let .failure(error):
                 Log.operations.error("Failed to check for custom zone existence: \(String(describing: error))")
 
@@ -405,26 +355,12 @@ private extension CloudKitOperationHandler {
     func checkSubscription(zoneID _: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
         let operation = CKFetchSubscriptionsOperation(subscriptionIDs: [subscriptionID])
 
-        var foundSubscription = false
-
-        operation.perSubscriptionResultBlock = { _, result in
-            if case .success = result {
-                foundSubscription = true
-            }
-        }
-
         operation.fetchSubscriptionsResultBlock = { result in
             switch result {
             case .success:
-                if foundSubscription {
-                    Log.operations.debug("Subscription exists")
+                Log.operations.debug("Subscription exists")
 
-                    completion(.success(true))
-                } else {
-                    Log.operations.error("Subscription reported as existing, but it doesn't exist")
-
-                    completion(.success(false))
-                }
+                completion(.success(true))
             case let .failure(error):
                 Log.operations.error("Failed to check for subscription existence: \(String(describing: error))")
 
