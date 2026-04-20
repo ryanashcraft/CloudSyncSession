@@ -94,7 +94,7 @@ public struct FetchOperation: Identifiable, SyncOperation {
     public struct Response {
         public let changeToken: CKServerChangeToken?
         public let changedRecords: [CKRecord]
-        public let deletedRecordIDs: [CKRecord.ID]
+        public let deletedRecordIDs: [CKRecord.RecordType: [CKRecord.ID]]
         public let hasMore: Bool
     }
 

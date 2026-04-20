@@ -18,7 +18,7 @@ class SuccessfulMockOperationHandler: OperationHandler {
                     FetchOperation.Response(
                         changeToken: nil,
                         changedRecords: (0 ..< 400).map { _ in makeTestRecord() },
-                        deletedRecordIDs: [],
+                        deletedRecordIDs: [:],
                         hasMore: self.operationCount == 1
                     )
                 )
