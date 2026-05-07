@@ -156,15 +156,12 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 
     public func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
-        var hasMore = false
-        var token: CKServerChangeToken? = fetchOperation.changeToken
-        var changedRecords: [CKRecord] = []
-        var deletedRecordIDs: [CKRecord.ID] = []
+        var responseBuilder = FetchOperationResponseBuilder(changeToken: fetchOperation.changeToken)
 
         let operation = CKFetchRecordZoneChangesOperation()
 
         let config = CKFetchRecordZoneChangesOperation.ZoneConfiguration(
-            previousServerChangeToken: token,
+            previousServerChangeToken: fetchOperation.changeToken,
             resultsLimit: maxRecommendedRecordsPerFetchOperation,
             desiredKeys: nil
         )
@@ -181,52 +178,51 @@ public class CloudKitOperationHandler: OperationHandler {
 
             Log.operations.debug("Received new change token")
 
-            token = newToken
+            responseBuilder.updateChangeToken(newToken)
         }
 
         operation.recordWasChangedBlock = { _, result in
             switch result {
             case let .success(record):
-                changedRecords.append(record)
+                responseBuilder.recordChanged(record)
             case let .failure(error):
                 Log.operations.error("Failed to fetch record: \(error)")
             }
         }
 
         operation.recordWithIDWasDeletedBlock = { recordID, _ in
-            deletedRecordIDs.append(recordID)
+            responseBuilder.recordDeleted(recordID)
         }
 
         operation.recordZoneFetchResultBlock = { _, result in
             switch result {
             case let .success((newToken, _, newHasMore)):
-                hasMore = newHasMore
-
                 Log.operations.debug("Received new change token")
 
-                token = newToken
+                responseBuilder.recordZoneFetchSucceeded(changeToken: newToken, hasMore: newHasMore)
             case let .failure(error):
                 Log.operations.error("Failed to fetch record zone: \(error)")
+                responseBuilder.recordZoneFetchFailed(error)
             }
         }
 
         operation.fetchRecordZoneChangesResultBlock = { result in
             switch result {
             case .success:
-                Log.operations.info("Finished fetching record zone changes")
+                switch responseBuilder.response() {
+                case let .success(response):
+                    Log.operations.info("Finished fetching record zone changes")
 
-                self.onOperationSuccess()
+                    self.onOperationSuccess()
 
-                completion(
-                    .success(
-                        FetchOperation.Response(
-                            changeToken: token,
-                            changedRecords: changedRecords,
-                            deletedRecordIDs: deletedRecordIDs,
-                            hasMore: hasMore
-                        )
-                    )
-                )
+                    completion(.success(response))
+                case let .failure(error):
+                    Log.operations.error("Failed to fetch record zone changes: \(error)")
+
+                    self.onOperationError(error)
+
+                    completion(.failure(error))
+                }
             case let .failure(error):
                 Log.operations.error("Failed to fetch record zone changes: \(error)")
 
@@ -303,16 +299,86 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 }
 
+struct FetchOperationResponseBuilder {
+    private var changeToken: CKServerChangeToken?
+    private var changedRecords: [CKRecord] = []
+    private var deletedRecordIDs: [CKRecord.ID] = []
+    private var hasMore = false
+    private var recordZoneFetchError: Error?
+
+    init(changeToken: CKServerChangeToken?) {
+        self.changeToken = changeToken
+    }
+
+    mutating func updateChangeToken(_ changeToken: CKServerChangeToken) {
+        self.changeToken = changeToken
+    }
+
+    mutating func recordChanged(_ record: CKRecord) {
+        changedRecords.append(record)
+    }
+
+    mutating func recordDeleted(_ recordID: CKRecord.ID) {
+        deletedRecordIDs.append(recordID)
+    }
+
+    mutating func recordZoneFetchSucceeded(changeToken: CKServerChangeToken, hasMore: Bool) {
+        self.changeToken = changeToken
+        self.hasMore = hasMore
+    }
+
+    mutating func recordZoneFetchFailed(_ error: Error) {
+        recordZoneFetchError = recordZoneFetchError ?? error
+    }
+
+    func response() -> Result<FetchOperation.Response, Error> {
+        if let recordZoneFetchError {
+            return .failure(recordZoneFetchError)
+        }
+
+        return .success(
+            FetchOperation.Response(
+                changeToken: changeToken,
+                changedRecords: changedRecords,
+                deletedRecordIDs: deletedRecordIDs,
+                hasMore: hasMore
+            )
+        )
+    }
+}
+
 private extension CloudKitOperationHandler {
     func checkCustomZone(zoneID: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
         let operation = CKFetchRecordZonesOperation(recordZoneIDs: [zoneID])
 
+        var foundZone = false
+        var zoneFetchError: Error?
+
+        operation.perRecordZoneResultBlock = { _, result in
+            switch result {
+            case .success:
+                foundZone = true
+            case let .failure(error):
+                zoneFetchError = error
+            }
+        }
+
         operation.fetchRecordZonesResultBlock = { result in
             switch result {
             case .success:
-                Log.operations.debug("Custom zone exists")
+                if let zoneFetchError {
+                    Log.operations.error("Failed to check for custom zone existence: \(String(describing: zoneFetchError))")
 
-                completion(.success(true))
+                    completion(.failure(zoneFetchError))
+                } else if foundZone {
+                    Log.operations.debug("Custom zone exists")
+
+                    completion(.success(true))
+                } else {
+                    Log.operations.error("Custom zone reported as existing, but it doesn't exist")
+
+                    completion(.success(false))
+                }
             case let .failure(error):
                 Log.operations.error("Failed to check for custom zone existence: \(String(describing: error))")
 
@@ -355,12 +421,34 @@ private extension CloudKitOperationHandler {
     func checkSubscription(zoneID _: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
         let operation = CKFetchSubscriptionsOperation(subscriptionIDs: [subscriptionID])
 
+        var foundSubscription = false
+        var subscriptionFetchError: Error?
+
+        operation.perSubscriptionResultBlock = { _, result in
+            switch result {
+            case .success:
+                foundSubscription = true
+            case let .failure(error):
+                subscriptionFetchError = error
+            }
+        }
+
         operation.fetchSubscriptionsResultBlock = { result in
             switch result {
             case .success:
-                Log.operations.debug("Subscription exists")
+                if let subscriptionFetchError {
+                    Log.operations.error("Failed to check for subscription existence: \(String(describing: subscriptionFetchError))")
 
-                completion(.success(true))
+                    completion(.failure(subscriptionFetchError))
+                } else if foundSubscription {
+                    Log.operations.debug("Subscription exists")
+
+                    completion(.success(true))
+                } else {
+                    Log.operations.error("Subscription reported as existing, but it doesn't exist")
+
+                    completion(.success(false))
+                }
             case let .failure(error):
                 Log.operations.error("Failed to check for subscription existence: \(String(describing: error))")
 

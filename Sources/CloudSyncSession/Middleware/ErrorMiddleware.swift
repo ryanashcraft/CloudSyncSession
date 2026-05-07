@@ -31,6 +31,13 @@ struct ErrorMiddleware: Middleware {
         switch event {
         case let .workFailure(work, error):
             if let event = mapErrorToEvent(error: error, work: work, zoneID: session.zoneID) {
+                if case .doWork(.createZone) = event {
+                    session.dispatch(event: event)
+                    session.dispatch(event: .retryWork(work))
+
+                    return next(.workFailure(work, error))
+                }
+
                 return next(event)
             }
 
@@ -220,6 +227,7 @@ struct ErrorMiddleware: Middleware {
                  .assetFileNotFound,
                  .assetFileModified,
                  .participantMayNeedVerification,
+                 .participantAlreadyInvited,
                  .alreadyShared,
                  .tooManyParticipants,
                  .unknownItem,

@@ -89,6 +89,55 @@ class PartialFailureMockOperationHandler: OperationHandler {
     }
 }
 
+class ZoneNotFoundFetchOperationHandler: OperationHandler {
+    let createZoneExpectation: XCTestExpectation
+    let retryFetchExpectation: XCTestExpectation
+
+    private var didCreateZone = false
+    private var fetchAttempts = 0
+
+    init(createZoneExpectation: XCTestExpectation, retryFetchExpectation: XCTestExpectation) {
+        self.createZoneExpectation = createZoneExpectation
+        self.retryFetchExpectation = retryFetchExpectation
+    }
+
+    func handle(createZoneOperation _: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
+            self.didCreateZone = true
+            self.createZoneExpectation.fulfill()
+            completion(.success(true))
+        }
+    }
+
+    func handle(createSubscriptionOperation _: CreateSubscriptionOperation, completion _: @escaping (Result<Bool, Error>) -> Void) {}
+
+    func handle(fetchOperation _: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) {
+            self.fetchAttempts += 1
+
+            if self.fetchAttempts == 1 {
+                completion(.failure(CKError(.zoneNotFound)))
+            } else {
+                XCTAssertTrue(self.didCreateZone)
+                self.retryFetchExpectation.fulfill()
+
+                completion(
+                    .success(
+                        FetchOperation.Response(
+                            changeToken: nil,
+                            changedRecords: [],
+                            deletedRecordIDs: [],
+                            hasMore: false
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    func handle(modifyOperation _: ModifyOperation, completion _: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {}
+}
+
 private var testIdentifier = "8B14FD76-EA56-49B0-A184-6C01828BA20A"
 
 private var testZoneID = CKRecordZone.ID(
@@ -472,6 +521,55 @@ final class CloudSyncSessionTests: XCTestCase {
         session.dispatch(event: .doWork(.fetch(operation)))
 
         wait(for: [expectation], timeout: 1)
+    }
+
+    func testFetchZoneNotFoundCreatesZoneThenRetriesFetch() {
+        var tasks = Set<AnyCancellable>()
+        let createZoneExpectation = self.expectation(description: "create zone")
+        let retryFetchExpectation = self.expectation(description: "retry fetch")
+        let fetchCompletionExpectation = self.expectation(description: "fetch completion")
+
+        let mockOperationHandler = ZoneNotFoundFetchOperationHandler(
+            createZoneExpectation: createZoneExpectation,
+            retryFetchExpectation: retryFetchExpectation
+        )
+        let session = CloudSyncSession(
+            operationHandler: mockOperationHandler,
+            zoneID: testZoneID,
+            resolveConflict: { _, _ in nil },
+            resolveExpiredChangeToken: { nil }
+        )
+        session.state = SyncState(
+            hasGoodAccountStatus: true,
+            hasCreatedZone: true,
+            hasCreatedSubscription: true
+        )
+
+        session.fetchWorkCompletedSubject
+            .sink { _, _ in
+                fetchCompletionExpectation.fulfill()
+            }
+            .store(in: &tasks)
+
+        session.fetch(FetchOperation(changeToken: nil))
+
+        wait(for: [createZoneExpectation, retryFetchExpectation, fetchCompletionExpectation], timeout: 2)
+    }
+
+    func testFetchResponseBuilderFailsWhenRecordZoneFetchFails() {
+        let error = CKError(.zoneNotFound)
+        var builder = FetchOperationResponseBuilder(changeToken: nil)
+
+        builder.recordZoneFetchFailed(error)
+
+        switch builder.response() {
+        case .success:
+            XCTFail("Expected record-zone fetch failure to fail the fetch operation")
+        case let .failure(receivedError as CKError):
+            XCTAssertEqual(receivedError.code, .zoneNotFound)
+        case let .failure(receivedError):
+            XCTFail("Expected CKError.zoneNotFound, received \(receivedError)")
+        }
     }
 
     // MARK: - CKRecord Extensions
