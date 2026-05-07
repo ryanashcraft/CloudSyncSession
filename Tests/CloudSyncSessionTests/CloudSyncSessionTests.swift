@@ -572,6 +572,22 @@ final class CloudSyncSessionTests: XCTestCase {
         }
     }
 
+    func testFetchResponseBuilderFailsWhenRecordFetchFails() {
+        let error = CKError(.assetNotAvailable)
+        var builder = FetchOperationResponseBuilder(changeToken: nil)
+
+        builder.recordFetchFailed(error)
+
+        switch builder.response() {
+        case .success:
+            XCTFail("Expected record fetch failure to fail the fetch operation")
+        case let .failure(receivedError as CKError):
+            XCTAssertEqual(receivedError.code, .assetNotAvailable)
+        case let .failure(receivedError):
+            XCTFail("Expected CKError.assetNotAvailable, received \(receivedError)")
+        }
+    }
+
     func testMissingSubscriptionIsReportedAsNotExisting() {
         let result = SubscriptionExistenceResult(subscriptionFetchError: CKError(.unknownItem), foundSubscription: false)
 

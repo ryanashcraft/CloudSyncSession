@@ -187,6 +187,7 @@ public class CloudKitOperationHandler: OperationHandler {
                 responseBuilder.recordChanged(record)
             case let .failure(error):
                 Log.operations.error("Failed to fetch record: \(error)")
+                responseBuilder.recordFetchFailed(error)
             }
         }
 
@@ -304,7 +305,7 @@ struct FetchOperationResponseBuilder {
     private var changedRecords: [CKRecord] = []
     private var deletedRecordIDs: [CKRecord.ID] = []
     private var hasMore = false
-    private var recordZoneFetchError: Error?
+    private var fetchError: Error?
 
     init(changeToken: CKServerChangeToken?) {
         self.changeToken = changeToken
@@ -328,12 +329,16 @@ struct FetchOperationResponseBuilder {
     }
 
     mutating func recordZoneFetchFailed(_ error: Error) {
-        recordZoneFetchError = recordZoneFetchError ?? error
+        fetchError = fetchError ?? error
+    }
+
+    mutating func recordFetchFailed(_ error: Error) {
+        fetchError = fetchError ?? error
     }
 
     func response() -> Result<FetchOperation.Response, Error> {
-        if let recordZoneFetchError {
-            return .failure(recordZoneFetchError)
+        if let fetchError {
+            return .failure(fetchError)
         }
 
         return .success(
