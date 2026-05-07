@@ -572,6 +572,17 @@ final class CloudSyncSessionTests: XCTestCase {
         }
     }
 
+    func testMissingSubscriptionIsReportedAsNotExisting() {
+        let result = SubscriptionExistenceResult(subscriptionFetchError: CKError(.unknownItem), foundSubscription: false)
+
+        switch result.result {
+        case let .success(exists):
+            XCTAssertFalse(exists)
+        case let .failure(error):
+            XCTFail("Expected missing subscription to be reported as not existing, received \(error)")
+        }
+    }
+
     // MARK: - CKRecord Extensions
 
     func testCKRecordRemoveAllFields() {

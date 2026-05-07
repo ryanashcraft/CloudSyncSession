@@ -436,18 +436,21 @@ private extension CloudKitOperationHandler {
         operation.fetchSubscriptionsResultBlock = { result in
             switch result {
             case .success:
-                if let subscriptionFetchError {
-                    Log.operations.error("Failed to check for subscription existence: \(String(describing: subscriptionFetchError))")
+                switch SubscriptionExistenceResult(subscriptionFetchError: subscriptionFetchError, foundSubscription: foundSubscription).result {
+                case let .failure(error):
+                    Log.operations.error("Failed to check for subscription existence: \(String(describing: error))")
 
-                    completion(.failure(subscriptionFetchError))
-                } else if foundSubscription {
-                    Log.operations.debug("Subscription exists")
+                    completion(.failure(error))
+                case let .success(subscriptionExists):
+                    if subscriptionExists {
+                        Log.operations.debug("Subscription exists")
 
-                    completion(.success(true))
-                } else {
-                    Log.operations.error("Subscription reported as existing, but it doesn't exist")
+                        completion(.success(true))
+                    } else {
+                        Log.operations.debug("Subscription does not exist")
 
-                    completion(.success(false))
+                        completion(.success(false))
+                    }
                 }
             case let .failure(error):
                 Log.operations.error("Failed to check for subscription existence: \(String(describing: error))")
@@ -495,5 +498,22 @@ private extension CloudKitOperationHandler {
         operation.database = database
 
         queueOperation(operation)
+    }
+}
+
+struct SubscriptionExistenceResult {
+    let subscriptionFetchError: Error?
+    let foundSubscription: Bool
+
+    var result: Result<Bool, Error> {
+        if let subscriptionFetchError {
+            if let ckError = subscriptionFetchError as? CKError, ckError.code == .unknownItem {
+                return .success(false)
+            }
+
+            return .failure(subscriptionFetchError)
+        }
+
+        return .success(foundSubscription)
     }
 }
