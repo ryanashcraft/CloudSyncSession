@@ -9,7 +9,11 @@ public struct StopError: Error {}
 /// An object that manages a long-lived series of CloudKit syncing operations.
 public class CloudSyncSession {
     /// Represents the state of the session.
-    @Published public var state = SyncState()
+    @Published public var state = SyncState() {
+        didSet {
+            statesBroadcast.send(state)
+        }
+    }
 
     /// Handles fetch, modify, create zone, and create subscription operations.
     let operationHandler: OperationHandler
@@ -40,6 +44,28 @@ public class CloudSyncSession {
 
     /// A Combine subject that publishes the latest iCloud account status.
     public let accountStatusSubject = CurrentValueSubject<CKAccountStatus?, Never>(nil)
+
+    /// Backs ``events``. Fed at every dispatch recursion level, adjacent to
+    /// eventsPublisher, so the async surface observes exactly what the Combine
+    /// surface observes.
+    let eventsBroadcast = AsyncBroadcast<SyncEvent>(replaysLatest: false, bufferingPolicy: .unbounded)
+
+    /// Backs ``fetchWorkCompletions``. Lossless: completions become ingested
+    /// records downstream, so no element may be dropped.
+    let fetchWorkCompletionsBroadcast = AsyncBroadcast<(FetchOperation, FetchOperation.Response)>(replaysLatest: false, bufferingPolicy: .unbounded)
+
+    /// Backs ``modifyWorkCompletions``. Lossless, same contract as fetch.
+    let modifyWorkCompletionsBroadcast = AsyncBroadcast<(ModifyOperation, ModifyOperation.Response)>(replaysLatest: false, bufferingPolicy: .unbounded)
+
+    /// Backs ``haltedErrors``. State: replays the current value, nil meaning
+    /// not halted, mirroring haltedSubject.
+    let haltedErrorsBroadcast = AsyncBroadcast<Error?>(replaysLatest: true, bufferingPolicy: .bufferingNewest(1), initialElement: .some(nil))
+
+    /// Backs ``accountStatuses``. State: replays the latest known status.
+    let accountStatusesBroadcast = AsyncBroadcast<CKAccountStatus?>(replaysLatest: true, bufferingPolicy: .bufferingNewest(1), initialElement: .some(nil))
+
+    /// Backs ``states``. State: replays the current session state.
+    let statesBroadcast = AsyncBroadcast<SyncState>(replaysLatest: true, bufferingPolicy: .bufferingNewest(1), initialElement: SyncState())
 
     let dispatchQueue = DispatchQueue(label: "CloudSyncSession.Dispatch", qos: .userInitiated)
 
@@ -124,6 +150,7 @@ public class CloudSyncSession {
         dispatchQueue.async {
             func next(event: SyncEvent, middlewaresToRun: [AnyMiddleware]) -> SyncEvent {
                 self.eventsPublisher.send(event)
+                self.eventsBroadcast.send(event)
 
                 if let middleware = middlewaresToRun.last {
                     return middleware.run(
