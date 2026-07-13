@@ -34,7 +34,11 @@ public class CloudKitOperationHandler: OperationHandler {
     let subscriptionID: String
     let savePolicy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged
     let qos: QualityOfService = .userInitiated
-    var rateLimitController = RateLimitPIDController(
+    /// Guards rateLimitController, throttleDuration, and nextOperationDeadline,
+    /// which are mutated from CloudKit callback threads and read when queueing.
+    private let throttleLock = NSLock()
+
+    private var rateLimitController = RateLimitPIDController(
         kp: 2,
         ki: 0.05,
         kd: 0.02,
@@ -51,7 +55,7 @@ public class CloudKitOperationHandler: OperationHandler {
         return queue
     }()
 
-    var throttleDuration: TimeInterval {
+    private var throttleDuration: TimeInterval {
         didSet {
             nextOperationDeadline = DispatchTime.now() + throttleDuration
 
@@ -63,7 +67,7 @@ public class CloudKitOperationHandler: OperationHandler {
         }
     }
 
-    var nextOperationDeadline: DispatchTime?
+    private var nextOperationDeadline: DispatchTime?
 
     public init(database: CKDatabase, zoneID: CKRecordZone.ID, subscriptionID: String) {
         self.database = database
@@ -73,7 +77,9 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 
     private func queueOperation(_ operation: Operation) {
+        throttleLock.lock()
         let deadline: DispatchTime = nextOperationDeadline ?? DispatchTime.now()
+        throttleLock.unlock()
 
         DispatchQueue.main.asyncAfter(deadline: deadline) {
             self.operationQueue.addOperation(operation)
@@ -81,22 +87,30 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 
     private func onOperationSuccess() {
+        throttleLock.lock()
+        defer { throttleLock.unlock() }
+
         rateLimitController.record(outcome: .success)
         throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
     }
 
     private func onOperationError(_ error: Error) {
-        if let ckError = error as? CKError {
-            rateLimitController.record(outcome: ckError.indicatesShouldBackoff ? .failure : .success)
+        guard let ckError = error as? CKError else {
+            return
+        }
 
-            if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
-                Log.operations.info("CloudKit error suggests retrying after \(suggestedBackoffSeconds) seconds")
+        throttleLock.lock()
+        defer { throttleLock.unlock() }
 
-                // Respect the amount suggested for the next operation
-                throttleDuration = suggestedBackoffSeconds
-            } else {
-                throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
-            }
+        rateLimitController.record(outcome: ckError.indicatesShouldBackoff ? .failure : .success)
+
+        if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
+            Log.operations.info("CloudKit error suggests retrying after \(suggestedBackoffSeconds) seconds")
+
+            // Respect the amount suggested for the next operation
+            throttleDuration = suggestedBackoffSeconds
+        } else {
+            throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
         }
     }
 
@@ -118,18 +132,23 @@ public class CloudKitOperationHandler: OperationHandler {
             recordIDsToDelete: recordIDsToDelete
         )
 
+        let accumulationLock = NSLock()
         var savedRecords: [CKRecord] = []
         var deletedRecordIDs: [CKRecord.ID] = []
 
         operation.perRecordSaveBlock = { _, result in
             if case let .success(record) = result {
+                accumulationLock.lock()
                 savedRecords.append(record)
+                accumulationLock.unlock()
             }
         }
 
         operation.perRecordDeleteBlock = { recordID, result in
             if case .success = result {
+                accumulationLock.lock()
                 deletedRecordIDs.append(recordID)
+                accumulationLock.unlock()
             }
         }
 
@@ -138,7 +157,11 @@ public class CloudKitOperationHandler: OperationHandler {
             case .success:
                 self.onOperationSuccess()
 
-                completion(.success(ModifyOperation.Response(savedRecords: savedRecords, deletedRecordIDs: deletedRecordIDs)))
+                accumulationLock.lock()
+                let response = ModifyOperation.Response(savedRecords: savedRecords, deletedRecordIDs: deletedRecordIDs)
+                accumulationLock.unlock()
+
+                completion(.success(response))
             case let .failure(error):
                 Log.operations.error("Failed to modify records: \(error)")
 
@@ -156,6 +179,7 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 
     public func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
+        let accumulationLock = NSLock()
         var hasMore = false
         var token: CKServerChangeToken? = fetchOperation.changeToken
         var changedRecords: [CKRecord] = []
@@ -164,7 +188,7 @@ public class CloudKitOperationHandler: OperationHandler {
         let operation = CKFetchRecordZoneChangesOperation()
 
         let config = CKFetchRecordZoneChangesOperation.ZoneConfiguration(
-            previousServerChangeToken: token,
+            previousServerChangeToken: fetchOperation.changeToken,
             resultsLimit: maxRecommendedRecordsPerFetchOperation,
             desiredKeys: nil
         )
@@ -181,30 +205,37 @@ public class CloudKitOperationHandler: OperationHandler {
 
             Log.operations.debug("Received new change token")
 
+            accumulationLock.lock()
             token = newToken
+            accumulationLock.unlock()
         }
 
         operation.recordWasChangedBlock = { _, result in
             switch result {
             case let .success(record):
+                accumulationLock.lock()
                 changedRecords.append(record)
+                accumulationLock.unlock()
             case let .failure(error):
                 Log.operations.error("Failed to fetch record: \(error)")
             }
         }
 
         operation.recordWithIDWasDeletedBlock = { recordID, _ in
+            accumulationLock.lock()
             deletedRecordIDs.append(recordID)
+            accumulationLock.unlock()
         }
 
         operation.recordZoneFetchResultBlock = { _, result in
             switch result {
             case let .success((newToken, _, newHasMore)):
-                hasMore = newHasMore
-
                 Log.operations.debug("Received new change token")
 
+                accumulationLock.lock()
+                hasMore = newHasMore
                 token = newToken
+                accumulationLock.unlock()
             case let .failure(error):
                 Log.operations.error("Failed to fetch record zone: \(error)")
             }
@@ -217,16 +248,16 @@ public class CloudKitOperationHandler: OperationHandler {
 
                 self.onOperationSuccess()
 
-                completion(
-                    .success(
-                        FetchOperation.Response(
-                            changeToken: token,
-                            changedRecords: changedRecords,
-                            deletedRecordIDs: deletedRecordIDs,
-                            hasMore: hasMore
-                        )
-                    )
+                accumulationLock.lock()
+                let response = FetchOperation.Response(
+                    changeToken: token,
+                    changedRecords: changedRecords,
+                    deletedRecordIDs: deletedRecordIDs,
+                    hasMore: hasMore
                 )
+                accumulationLock.unlock()
+
+                completion(.success(response))
             case let .failure(error):
                 Log.operations.error("Failed to fetch record zone changes: \(error)")
 
