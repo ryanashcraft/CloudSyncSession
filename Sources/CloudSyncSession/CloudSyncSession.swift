@@ -41,7 +41,7 @@ public class CloudSyncSession {
     /// A Combine subject that publishes the latest iCloud account status.
     public let accountStatusSubject = CurrentValueSubject<CKAccountStatus?, Never>(nil)
 
-    private var dispatchQueue = DispatchQueue(label: "CloudSyncSession.Dispatch", qos: .userInitiated)
+    let dispatchQueue = DispatchQueue(label: "CloudSyncSession.Dispatch", qos: .userInitiated)
 
     /**
      Creates a session.
@@ -73,9 +73,11 @@ public class CloudSyncSession {
         ]
     }
 
-    /// Add an additional mdidleware at the end of the chain.
+    /// Add an additional middleware at the end of the chain.
     public func appendMiddleware<M: Middleware>(_ middleware: M) {
-        middlewares.append(middleware.eraseToAnyMiddleware())
+        dispatchQueue.async {
+            self.middlewares.append(middleware.eraseToAnyMiddleware())
+        }
     }
 
     /// Start the session.
@@ -89,17 +91,28 @@ public class CloudSyncSession {
     }
 
     /// Reset the session state.
+    ///
+    /// The reset is performed on the session's dispatch queue so it is ordered
+    /// with respect to in flight events and any calls that follow it from the
+    /// same thread, such as the reset-then-start pattern.
     public func reset() {
-        state = SyncState()
+        dispatchQueue.async {
+            self.state = SyncState()
+        }
     }
 
     /// Queue a fetch operation.
+    ///
+    /// The duplicate change token check runs on the dispatch queue, where state
+    /// is confined.
     public func fetch(_ operation: FetchOperation) {
-        guard state.fetchQueue.allSatisfy({ $0.changeToken != operation.changeToken }) else {
-            return
-        }
+        dispatchQueue.async {
+            guard self.state.fetchQueue.allSatisfy({ $0.changeToken != operation.changeToken }) else {
+                return
+            }
 
-        dispatch(event: .doWork(.fetch(operation)))
+            self.dispatch(event: .doWork(.fetch(operation)))
+        }
     }
 
     /// Queue a modify operation.
