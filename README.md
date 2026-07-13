@@ -178,6 +178,35 @@ cloudSyncSession.eventsPublisher
     }
 ```
 
+## Async Sequences and One-Shots
+
+Each Combine subject has an async counterpart: `events`, `fetchWorkCompletions`, `modifyWorkCompletions`, `haltedErrors`, `accountStatuses`, and `states`. Create the stream before dispatching work and it observes every completion that follows.
+
+```swift
+Task {
+    for await (operation, response) in cloudSyncSession.fetchWorkCompletions {
+        // Process new and deleted records
+    }
+}
+```
+
+For one-off work, `perform(_:)` dispatches an operation and awaits its completion, throwing if the work fails terminally or the session halts first.
+
+```swift
+let response = try await cloudSyncSession.perform(
+    ModifyOperation(
+        records: records,
+        recordIDsToDelete: [],
+        checkpointID: UUID(),
+        userInfo: nil
+    )
+)
+```
+
+`SubjectMiddleware` feeds the async streams alongside the Combine subjects, so both surfaces observe the same completions in the same order.
+
+Building the package requires Swift tools 6.0 or later.
+
 ## Installation
 
 To use CloudSyncSession with Swift Package Manager, add a dependency to https://github.com/ryanashcraft/CloudSyncSession

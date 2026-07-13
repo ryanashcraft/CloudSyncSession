@@ -11,10 +11,12 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # The macos-15 image's default Xcode toolchain ships Swift 6.x, which the
+    # tools 6.0 manifest requires. swift-actions/setup-swift@v1 installs a
+    # Swift 5.x toolchain and cannot build this package.
+    runs-on: macos-15
     steps:
     - uses: actions/checkout@v4
-    - uses: swift-actions/setup-swift@v1
     - name: Build
       run: swift build -v
     - name: Run tests
