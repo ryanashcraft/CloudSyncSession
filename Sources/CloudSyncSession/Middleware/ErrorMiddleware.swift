@@ -226,6 +226,11 @@ struct ErrorMiddleware: Middleware {
                  .operationCancelled,
                  .accountTemporarilyUnavailable:
                 return .halt(error)
+            case .participantAlreadyInvited:
+                // Sharing is unused by this library. Returning nil passes the
+                // original workFailure event through unmapped, exactly what
+                // the @unknown default arm did before this case was listed.
+                return nil
             @unknown default:
                 return nil
             }

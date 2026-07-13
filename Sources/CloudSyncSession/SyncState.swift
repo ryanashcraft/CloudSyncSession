@@ -287,3 +287,7 @@ public struct SyncState {
         return state
     }
 }
+
+// SyncState is a value type; its queues hold operations covered by the
+// ownership transfer contract in SyncWork.swift.
+extension SyncState: @unchecked Sendable {}

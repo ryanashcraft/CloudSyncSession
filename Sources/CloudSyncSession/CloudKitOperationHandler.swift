@@ -334,6 +334,11 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 }
 
+// All mutable state (rateLimitController, throttleDuration,
+// nextOperationDeadline) is guarded by throttleLock; everything else is a
+// let constant, and OperationQueue and CKDatabase are thread safe.
+extension CloudKitOperationHandler: @unchecked Sendable {}
+
 private extension CloudKitOperationHandler {
     func checkCustomZone(zoneID: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
         let operation = CKFetchRecordZonesOperation(recordZoneIDs: [zoneID])

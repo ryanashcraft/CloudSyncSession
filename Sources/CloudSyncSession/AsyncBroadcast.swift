@@ -15,7 +15,7 @@ import Foundation
 /// Unbounded event broadcasts carry a consume promptly contract: elements
 /// buffer per stream until iterated, so a created-but-never-iterated stream
 /// grows without bound. Create streams where they will be consumed.
-final class AsyncBroadcast<Element>: @unchecked Sendable {
+final class AsyncBroadcast<Element: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private let replaysLatest: Bool
     private let bufferingPolicy: AsyncStream<Element>.Continuation.BufferingPolicy

@@ -204,3 +204,18 @@ private extension Array {
         }
     }
 }
+
+// Ownership transfer contract: the CKRecord instances inside operations and
+// responses are handed over, never shared. The library takes records at
+// dispatch and does not touch them after delivering a response; callers must
+// not mutate records after dispatching an operation. This is the same
+// (previously implicit) contract the Combine subjects operate under, and the
+// suite runs under Thread Sanitizer to back it up.
+extension FetchOperation: @unchecked Sendable {}
+extension FetchOperation.Response: @unchecked Sendable {}
+extension ModifyOperation: @unchecked Sendable {}
+extension ModifyOperation.Response: @unchecked Sendable {}
+extension CreateZoneOperation: @unchecked Sendable {}
+extension CreateSubscriptionOperation: @unchecked Sendable {}
+extension SyncWork: @unchecked Sendable {}
+extension SyncWork.Result: @unchecked Sendable {}

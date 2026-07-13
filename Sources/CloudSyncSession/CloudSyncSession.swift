@@ -105,8 +105,10 @@ public class CloudSyncSession {
 
     /// Add an additional middleware at the end of the chain.
     public func appendMiddleware<M: Middleware>(_ middleware: M) {
+        let anyMiddleware = middleware.eraseToAnyMiddleware()
+
         dispatchQueue.async {
-            self.middlewares.append(middleware.eraseToAnyMiddleware())
+            self.middlewares.append(anyMiddleware)
         }
     }
 
@@ -174,3 +176,8 @@ public class CloudSyncSession {
         }
     }
 }
+
+// The session is used from multiple threads by design. Mutable state is
+// confined to dispatchQueue; the broadcasts and waiters lock internally;
+// the Combine subjects are thread safe.
+extension CloudSyncSession: @unchecked Sendable {}

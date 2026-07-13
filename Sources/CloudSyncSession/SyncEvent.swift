@@ -63,6 +63,9 @@ public enum SyncEvent {
     }
 }
 
+// See the ownership transfer contract in SyncWork.swift.
+extension SyncEvent: @unchecked Sendable {}
+
 private extension CKAccountStatus {
     var debugDescription: String {
         switch self {

@@ -24,3 +24,10 @@ public extension Middleware {
         return AnyMiddleware(value: self)
     }
 }
+
+// The erased run closure cannot be typed @Sendable without changing the
+// public Middleware requirement, so the checked conformance is unavailable.
+// In practice the wrapper is safe to send once: run is invoked only on the
+// session's dispatch queue, and every middleware in this library is itself
+// Sendable, so the closure's captured state is too.
+extension AnyMiddleware: @unchecked Sendable {}

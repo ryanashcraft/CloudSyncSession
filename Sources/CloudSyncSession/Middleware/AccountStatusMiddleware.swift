@@ -35,3 +35,8 @@ public struct AccountStatusMiddleware: Middleware {
         return next(event)
     }
 }
+
+// Checked conformance: the session is Sendable and CKContainer is Sendable
+// in the SDK. Declared explicitly because public structs never get the
+// implicit conformance the internal middlewares rely on.
+extension AccountStatusMiddleware: Sendable {}
