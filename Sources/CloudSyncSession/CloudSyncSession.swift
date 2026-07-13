@@ -67,6 +67,10 @@ public class CloudSyncSession {
     /// Backs ``states``. State: replays the current session state.
     let statesBroadcast = AsyncBroadcast<SyncState>(replaysLatest: true, bufferingPolicy: .bufferingNewest(1), initialElement: SyncState())
 
+    /// One-shot waiters for the async perform APIs. Resolved by
+    /// SubjectMiddleware, where events are fully transformed.
+    let workWaiters = WorkWaiters()
+
     let dispatchQueue = DispatchQueue(label: "CloudSyncSession.Dispatch", qos: .userInitiated)
 
     /**

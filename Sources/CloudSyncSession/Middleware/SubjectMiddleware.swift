@@ -33,6 +33,8 @@ struct SubjectMiddleware: Middleware {
             default:
                 break
             }
+
+            session.workWaiters.handleFinalEvent(event)
         }
 
         return next(event)
