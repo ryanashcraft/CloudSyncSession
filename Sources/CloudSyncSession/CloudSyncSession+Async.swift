@@ -58,8 +58,9 @@ public extension CloudSyncSession {
     /// session halts first (including StopError from ``stop()``),
     /// DuplicateFetchOperationError if a fetch with the same change token is
     /// already queued, and CancellationError if the awaiting task is
-    /// cancelled. Cancelling the await abandons the wait; it does not
-    /// cancel the underlying work.
+    /// cancelled. On an already-halted session the halt error is thrown
+    /// immediately and the operation is never queued. Cancelling the await
+    /// abandons the wait; it does not cancel the underlying work.
     func perform(_ operation: FetchOperation) async throws -> FetchOperation.Response {
         let operationID = operation.id
 
@@ -72,8 +73,9 @@ public extension CloudSyncSession {
                         return
                     }
 
-                    self.workWaiters.addFetchWaiter(operationID: operationID, continuation: continuation)
-                    self.dispatch(event: .doWork(.fetch(operation)))
+                    if self.workWaiters.addFetchWaiter(operationID: operationID, continuation: continuation) {
+                        self.dispatch(event: .doWork(.fetch(operation)))
+                    }
                 }
             }
         } onCancel: {
@@ -87,7 +89,8 @@ public extension CloudSyncSession {
     /// (the checkpoint rides the final chunk) and conflict resolution (a
     /// requeued operation gets a new id but keeps the checkpoint). The
     /// returned response belongs to the checkpoint carrying chunk. Throws
-    /// like perform(FetchOperation). A nil checkpointID is a programmer
+    /// like perform(FetchOperation), and likewise never queues the operation
+    /// on an already-halted session. A nil checkpointID is a programmer
     /// error and traps.
     func perform(_ operation: ModifyOperation) async throws -> ModifyOperation.Response {
         guard let checkpointID = operation.checkpointID else {
@@ -97,8 +100,9 @@ public extension CloudSyncSession {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 dispatchQueue.async {
-                    self.workWaiters.addModifyWaiter(checkpointID: checkpointID, continuation: continuation)
-                    self.dispatch(event: .doWork(.modify(operation)))
+                    if self.workWaiters.addModifyWaiter(checkpointID: checkpointID, continuation: continuation) {
+                        self.dispatch(event: .doWork(.modify(operation)))
+                    }
                 }
             }
         } onCancel: {

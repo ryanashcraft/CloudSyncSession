@@ -124,11 +124,15 @@ public class CloudSyncSession {
 
     /// Reset the session state.
     ///
-    /// The reset is performed on the session's dispatch queue so it is ordered
-    /// with respect to in flight events and any calls that follow it from the
-    /// same thread, such as the reset-then-start pattern.
+    /// The reset runs synchronously on the session's dispatch queue: it is
+    /// ordered after any events already dispatched and completes before the
+    /// method returns, so callers can stamp state or call start() immediately
+    /// afterwards without the reset clobbering them. Must not be called from
+    /// the session's own dispatch queue. Pending perform(_:) waiters are not
+    /// resolved by a reset; they remain registered until their work completes
+    /// or the session halts.
     public func reset() {
-        dispatchQueue.async {
+        dispatchQueue.sync {
             self.state = SyncState()
         }
     }
@@ -177,7 +181,10 @@ public class CloudSyncSession {
     }
 }
 
-// The session is used from multiple threads by design. Mutable state is
-// confined to dispatchQueue; the broadcasts and waiters lock internally;
-// the Combine subjects are thread safe.
+// The session is used from multiple threads by design. The library's own
+// writes to mutable state are confined to dispatchQueue; the broadcasts and
+// waiters lock internally; the Combine subjects are thread safe. One known
+// gap: the public `state` setter is technically writable cross-thread by
+// clients, outside the queue confinement. Closing it (a queued stamping API
+// or private(set)) is a breaking change reserved for a future internals pass.
 extension CloudSyncSession: @unchecked Sendable {}

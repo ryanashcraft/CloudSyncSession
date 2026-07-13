@@ -32,7 +32,14 @@ final class WorkWaiters: @unchecked Sendable {
     /// never reused, so the only cost is a few bytes per occurrence.
     private var cancelledWaiterIDs: Set<UUID> = []
 
-    func addFetchWaiter(operationID: UUID, continuation: CheckedContinuation<FetchOperation.Response, any Error>) {
+    /// Registers a waiter for a fetch operation's terminal event.
+    ///
+    /// Returns true only when the continuation was appended and will be
+    /// resumed by a later event. Returns false when the continuation was
+    /// resumed immediately (a cancellation tombstone or the cached halt
+    /// error); the caller must not dispatch work for a false return, so no
+    /// operation lands in a frozen queue.
+    func addFetchWaiter(operationID: UUID, continuation: CheckedContinuation<FetchOperation.Response, any Error>) -> Bool {
         lock.lock()
 
         if cancelledWaiterIDs.contains(operationID) {
@@ -40,21 +47,25 @@ final class WorkWaiters: @unchecked Sendable {
             lock.unlock()
             continuation.resume(throwing: CancellationError())
 
-            return
+            return false
         }
 
         if let haltError {
             lock.unlock()
             continuation.resume(throwing: haltError)
 
-            return
+            return false
         }
 
         fetchContinuationsByOperationID[operationID, default: []].append(continuation)
         lock.unlock()
+
+        return true
     }
 
-    func addModifyWaiter(checkpointID: UUID, continuation: CheckedContinuation<ModifyOperation.Response, any Error>) {
+    /// Registers a waiter for a modify operation's terminal event, correlated
+    /// by checkpointID. Same return contract as addFetchWaiter(_:_:).
+    func addModifyWaiter(checkpointID: UUID, continuation: CheckedContinuation<ModifyOperation.Response, any Error>) -> Bool {
         lock.lock()
 
         if cancelledWaiterIDs.contains(checkpointID) {
@@ -62,25 +73,31 @@ final class WorkWaiters: @unchecked Sendable {
             lock.unlock()
             continuation.resume(throwing: CancellationError())
 
-            return
+            return false
         }
 
         if let haltError {
             lock.unlock()
             continuation.resume(throwing: haltError)
 
-            return
+            return false
         }
 
         modifyContinuationsByCheckpointID[checkpointID, default: []].append(continuation)
         lock.unlock()
+
+        return true
     }
 
+    /// Registers a predicate waiter for the first matching fetch completion.
+    /// Same return contract as addFetchWaiter(_:_:); the value exists for
+    /// signature symmetry, as this waiter dispatches no work of its own.
+    @discardableResult
     func addFetchCompletionWaiter(
         id: UUID,
         predicate: @escaping (FetchOperation, FetchOperation.Response) -> Bool,
         continuation: CheckedContinuation<(FetchOperation, FetchOperation.Response), any Error>
-    ) {
+    ) -> Bool {
         lock.lock()
 
         if cancelledWaiterIDs.contains(id) {
@@ -88,18 +105,20 @@ final class WorkWaiters: @unchecked Sendable {
             lock.unlock()
             continuation.resume(throwing: CancellationError())
 
-            return
+            return false
         }
 
         if let haltError {
             lock.unlock()
             continuation.resume(throwing: haltError)
 
-            return
+            return false
         }
 
         fetchCompletionWaitersByID[id] = (predicate, continuation)
         lock.unlock()
+
+        return true
     }
 
     func cancelWaiter(id: UUID) {

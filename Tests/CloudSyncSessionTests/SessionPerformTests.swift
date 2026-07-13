@@ -80,6 +80,13 @@ final class SessionPerformTests: XCTestCase {
         } catch {
             XCTAssertTrue(error is StopError)
         }
+
+        // The rejected operation must not have entered the frozen queue.
+        let drained = expectation(description: "dispatch queue drained")
+        session.dispatchQueue.async { drained.fulfill() }
+        await fulfillment(of: [drained], timeout: 2)
+
+        XCTAssertFalse(session.state.hasWorkQueued)
     }
 
     func testPerformFetchThrowsOnDuplicateChangeToken() async {
@@ -133,6 +140,50 @@ final class SessionPerformTests: XCTestCase {
         XCTAssertFalse(response.changedRecords.isEmpty)
     }
 
+    func testPerformModifyThrowsTerminalWorkFailureUnmappedByErrorMiddleware() async {
+        // A CKError whose code the ErrorMiddleware switch does not map (an
+        // @unknown-default value, constructed from a raw error code CloudKit
+        // does not define) passes through unmapped, so the raw workFailure
+        // reaches SubjectMiddleware and the waiter throws the original
+        // CloudKit error rather than a halt error.
+        let unmappedErrorCode = 9999
+        let unmappedError = CKError(_nsError: NSError(domain: CKErrorDomain, code: unmappedErrorCode))
+        let session = makeStartedSession(handler: FailingMockOperationHandler(error: unmappedError))
+        let operation = ModifyOperation(records: [makeTestRecord()], recordIDsToDelete: [], checkpointID: UUID(), userInfo: nil)
+
+        do {
+            _ = try await session.perform(operation)
+            XCTFail("expected a throw")
+        } catch {
+            XCTAssertEqual((error as NSError).domain, CKErrorDomain)
+            XCTAssertEqual((error as NSError).code, unmappedErrorCode)
+        }
+    }
+
+    func testPerformModifyResolvesAfterConflictRequeue() async throws {
+        let clientRecord = makeTestRecord()
+        let serverRecord = CKRecord(recordType: "Test", recordID: clientRecord.recordID)
+        let conflictError = CKError(
+            .serverRecordChanged,
+            userInfo: [
+                CKRecordChangedErrorClientRecordKey: clientRecord,
+                CKRecordChangedErrorServerRecordKey: serverRecord,
+                CKRecordChangedErrorAncestorRecordKey: CKRecord(recordType: "Test", recordID: clientRecord.recordID),
+            ]
+        )
+
+        // The first modify fails with a conflict carrying client and server
+        // records; the session's resolver picks the server record, the
+        // operation re-queues with a new id but the same checkpoint, and the
+        // second attempt succeeds.
+        let session = makeStartedConflictResolvingSession(handler: FailOnceMockOperationHandler(error: conflictError))
+        let operation = ModifyOperation(records: [clientRecord], recordIDsToDelete: [], checkpointID: UUID(), userInfo: nil)
+
+        let response = try await session.perform(operation)
+
+        XCTAssertEqual(response.savedRecords.map(\.recordID), [serverRecord.recordID])
+    }
+
     func testFirstFetchCompletionThrowsOnHalt() async {
         let session = makeStartedSession(handler: NeverCompletingMockOperationHandler())
 
@@ -148,6 +199,25 @@ final class SessionPerformTests: XCTestCase {
             XCTAssertTrue(error is StopError)
         }
     }
+}
+
+private let conflictTestZoneID = CKRecordZone.ID(zoneName: "test", ownerName: CKCurrentUserDefaultName)
+
+/// Like makeStartedSession, but resolves record conflicts by taking the
+/// server record.
+private func makeStartedConflictResolvingSession(handler: OperationHandler) -> CloudSyncSession {
+    let session = CloudSyncSession(
+        operationHandler: handler,
+        zoneID: conflictTestZoneID,
+        resolveConflict: { _, serverRecord in serverRecord },
+        resolveExpiredChangeToken: { nil }
+    )
+
+    session.dispatch(event: .accountStatusChanged(.available))
+    session.dispatch(event: .workSuccess(.createZone(CreateZoneOperation(zoneID: conflictTestZoneID)), .createZone(true)))
+    session.dispatch(event: .workSuccess(.createSubscription(CreateSubscriptionOperation(zoneID: conflictTestZoneID)), .createSubscription(true)))
+
+    return session
 }
 
 /// Fails the first fetch with the given error, then succeeds.
