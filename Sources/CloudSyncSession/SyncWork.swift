@@ -137,8 +137,28 @@ public struct ModifyOperation: Identifiable, SyncOperation {
         let splitRecords: [[CKRecord]] = records.chunked(into: maxRecommendedRecordsPerOperation)
         let splitRecordIDsToDelete: [[CKRecord.ID]] = recordIDsToDelete.chunked(into: maxRecommendedRecordsPerOperation)
 
-        return splitRecords.map { ModifyOperation(records: $0, recordIDsToDelete: [], checkpointID: nil, userInfo: userInfo) } +
-            splitRecordIDsToDelete.enumerated().map { ModifyOperation(records: [], recordIDsToDelete: $0.element, checkpointID: $0.offset == splitRecordIDsToDelete.count - 1 ? checkpointID : nil, userInfo: userInfo) }
+        let recordChunks = splitRecords.map {
+            ModifyOperation(records: $0, recordIDsToDelete: [], checkpointID: nil, userInfo: userInfo)
+        }
+        let deletionChunks = splitRecordIDsToDelete.map {
+            ModifyOperation(records: [], recordIDsToDelete: $0, checkpointID: nil, userInfo: userInfo)
+        }
+
+        var chunks = recordChunks + deletionChunks
+
+        // The checkpoint must ride the final chunk so checkpoint-correlated
+        // waiters resolve only after every piece of the original operation
+        // has completed.
+        if let lastChunk = chunks.last {
+            chunks[chunks.count - 1] = ModifyOperation(
+                records: lastChunk.records,
+                recordIDsToDelete: lastChunk.recordIDsToDelete,
+                checkpointID: checkpointID,
+                userInfo: userInfo
+            )
+        }
+
+        return chunks
     }
 
     var splitInHalf: [ModifyOperation] {
