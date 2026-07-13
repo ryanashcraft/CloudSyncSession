@@ -158,22 +158,19 @@ final class WorkWaiters: @unchecked Sendable {
                 break
             }
         case let .workFailure(work, error):
-            switch work {
-            case let .fetch(operation):
+            if case let .fetch(operation) = work {
                 if let continuations = fetchContinuationsByOperationID.removeValue(forKey: operation.id) {
                     resumptions += continuations.map { continuation in
                         { continuation.resume(throwing: error) }
                     }
                 }
-            case let .modify(operation):
+            } else if case let .modify(operation) = work {
                 if let checkpointID = operation.checkpointID,
                    let continuations = modifyContinuationsByCheckpointID.removeValue(forKey: checkpointID) {
                     resumptions += continuations.map { continuation in
                         { continuation.resume(throwing: error) }
                     }
                 }
-            default:
-                break
             }
         case let .halt(error):
             haltError = error
