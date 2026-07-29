@@ -118,33 +118,20 @@ public class CloudKitOperationHandler: OperationHandler {
             recordIDsToDelete: recordIDsToDelete
         )
 
-        var savedRecords: [CKRecord] = []
-        var deletedRecordIDs: [CKRecord.ID] = []
-
-        operation.perRecordSaveBlock = { _, result in
-            if case let .success(record) = result {
-                savedRecords.append(record)
-            }
-        }
-
-        operation.perRecordDeleteBlock = { recordID, result in
-            if case .success = result {
-                deletedRecordIDs.append(recordID)
-            }
-        }
-
-        operation.modifyRecordsResultBlock = { result in
-            switch result {
-            case .success:
-                self.onOperationSuccess()
-
-                completion(.success(ModifyOperation.Response(savedRecords: savedRecords, deletedRecordIDs: deletedRecordIDs)))
-            case let .failure(error):
+        // Deliberately the deprecated block: modifyRecordsResultBlock reports .success even
+        // when every record in the batch failed (per-record errors never roll up on the
+        // iOS 15+ API — https://developer.apple.com/forums/thread/708758), which starves
+        // ErrorMiddleware of the partialFailure it needs for conflict resolution and retry.
+        operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
+            if let error = error {
                 Log.operations.error("Failed to modify records: \(error)")
-
                 self.onOperationError(error)
 
                 completion(.failure(error))
+            } else {
+                self.onOperationSuccess()
+
+                completion(.success(ModifyOperation.Response(savedRecords: serverRecords ?? [], deletedRecordIDs: deletedRecordIDs ?? [])))
             }
         }
 
