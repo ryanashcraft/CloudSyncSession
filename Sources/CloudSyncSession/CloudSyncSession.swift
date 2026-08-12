@@ -8,8 +8,18 @@ public struct StopError: Error {}
 
 /// An object that manages a long-lived series of CloudKit syncing operations.
 public class CloudSyncSession {
+    private let stateSubject = CurrentValueSubject<SyncState, Never>(SyncState())
+
     /// Represents the state of the session.
-    @Published public var state = SyncState()
+    public var state: SyncState {
+        get { stateSubject.value }
+        set { stateSubject.value = newValue }
+    }
+
+    /// A Combine publisher that publishes the state, starting with the current value.
+    public var statePublisher: AnyPublisher<SyncState, Never> {
+        stateSubject.eraseToAnyPublisher()
+    }
 
     /// Handles fetch, modify, create zone, and create subscription operations.
     let operationHandler: OperationHandler

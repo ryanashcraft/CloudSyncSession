@@ -170,7 +170,7 @@ final class CloudSyncSessionTests: XCTestCase {
         let createSubscriptionWork = SyncWork.createSubscription(CreateSubscriptionOperation(zoneID: testZoneID))
         session.dispatch(event: .workSuccess(createSubscriptionWork, .createSubscription(true)))
 
-        session.$state
+        session.statePublisher
             .sink { newState in
                 if newState.isRunning {
                     expectation.fulfill()
@@ -235,7 +235,7 @@ final class CloudSyncSessionTests: XCTestCase {
             }
             .store(in: &tasks)
 
-        session.$state
+        session.statePublisher
             .sink { newState in
                 if !newState.isRunning {
                     expectation.fulfill()
@@ -298,7 +298,7 @@ final class CloudSyncSessionTests: XCTestCase {
             hasCreatedSubscription: true
         )
 
-        session.$state
+        session.statePublisher
             .receive(on: DispatchQueue.main)
             .sink { newState in
                 if newState.isHalted {
@@ -366,7 +366,7 @@ final class CloudSyncSessionTests: XCTestCase {
 
         // Won't recover because no conflict handler set up
 
-        session.$state
+        session.statePublisher
             .receive(on: DispatchQueue.main)
             .sink { newState in
                 if newState.isHalted {

@@ -167,7 +167,7 @@ cloudSyncSession.accountStatusSubject
         // Update UI with new account status
     }
 
-cloudSyncSession.$state
+cloudSyncSession.statePublisher
     .sink { state in
         // Update UI with new sync state
     }
