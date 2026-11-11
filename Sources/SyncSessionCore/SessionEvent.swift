@@ -1,8 +1,8 @@
-import CloudKit
+import Foundation
 
 /// Something the session did or was asked to do, published once on `eventsPublisher` for
 /// diagnostics. Events describe what happened; they do not drive the session.
-public enum SyncEvent {
+public enum SessionEvent<Backend: SyncBackend> {
     /// Indicates the session was started.
     case start
 
@@ -10,29 +10,29 @@ public enum SyncEvent {
     case halt(Error)
 
     /// Indicates the iCloud account status changed.
-    case accountStatusChanged(CKAccountStatus)
+    case accountStatusChanged(Backend.AccountStatus)
 
     /// Queues up work.
-    case doWork(SyncWork)
+    case doWork(SessionWork<Backend>)
 
     /// Indicates that failed work is being tried again, in the same place in the queue.
-    case retryWork(SyncWork)
+    case retryWork(SessionWork<Backend>)
 
     /// Indicates that work has failed.
-    case workFailure(SyncWork, Error)
+    case workFailure(SessionWork<Backend>, Error)
 
     /// Indicates that work has succeeded.
-    case workSuccess(SyncWork, SyncWork.Result)
+    case workSuccess(SessionWork<Backend>, SessionWork<Backend>.Result)
 
     /// Indicates that modification work failed due to a conflict and is being sent again in the same place in the queue.
     /// Includes failed work, records to save including resolved records, and record IDs that should be deleted.
-    case resolveConflict(SyncWork, [CKRecord], [CKRecord.ID])
+    case resolveConflict(SessionWork<Backend>, [Backend.Record], [Backend.RecordID])
 
     /// Indicates that work failed and should be retried after some time. Includes the wait the server suggested, if any.
-    case retry(SyncWork, Error, TimeInterval?)
+    case retry(SessionWork<Backend>, Error, TimeInterval?)
 
     /// Indicates that the server rejected work as too large and it is being split up.
-    case split(SyncWork, Error)
+    case split(SessionWork<Backend>, Error)
 
     var logDescription: String {
         switch self {
@@ -41,7 +41,7 @@ public enum SyncEvent {
         case .halt:
             return "Halt"
         case let .accountStatusChanged(status):
-            return "Account status changed: \(status.debugDescription)"
+            return "Account status changed: \(Backend.describe(status))"
         case let .doWork(work):
             return "Do work: \(work.debugDescription)"
         case let .retryWork(work):
@@ -56,25 +56,6 @@ public enum SyncEvent {
             return "Split work: \(work.debugDescription)"
         case let .resolveConflict(_, records, recordIDsToDelete):
             return "Resolving \(records.count) records with \(recordIDsToDelete.count) deleted"
-        }
-    }
-}
-
-private extension CKAccountStatus {
-    var debugDescription: String {
-        switch self {
-        case .available:
-            return "Available"
-        case .couldNotDetermine:
-            return "Could Not Determine"
-        case .noAccount:
-            return "No Account"
-        case .restricted:
-            return "Restricted"
-        case .temporarilyUnavailable:
-            return "Temporarily Unavailable"
-        @unknown default:
-            return "Unknown"
         }
     }
 }

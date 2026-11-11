@@ -1,6 +1,7 @@
 import CloudKit
 @testable import CloudSyncSession
 import Combine
+@testable import SyncSessionCore
 import XCTest
 
 /// One piece of finished work the session reported to its observers.

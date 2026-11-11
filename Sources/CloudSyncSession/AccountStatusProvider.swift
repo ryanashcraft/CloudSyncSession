@@ -1,4 +1,5 @@
 import CloudKit
+import SyncSessionCore
 
 /// Looks up the current iCloud account status. The session calls it from `start()` whenever it
 /// does not know the status, which is the case for a new session and after `reset()`.

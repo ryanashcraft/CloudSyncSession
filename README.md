@@ -188,7 +188,13 @@ To use CloudSyncSession with Swift Package Manager, add a dependency to https://
 
 ## Under the Hood
 
-CloudSyncSession keeps four queues of work, one per kind: create zone, create subscription, modify, and fetch. They live in `SyncState`, which is also the snapshot published on `statePublisher`. Calls such as `modify(_:)`, `fetch(_:)`, `start()` and `stop()` change that state in one step, on the caller's thread, under a lock.
+The package has two layers.
+
+`SyncSessionCore` is the sync engine without a server: the queues, the run loop that works through them, retries, splitting, and what observers are told. Its `SyncSession` is generic over a `SyncBackend`, which names the types a server trades in (record, record ID, change token, account status) and lists what has to be set up on the server before records can be synced. Nothing in the core imports CloudKit.
+
+`CloudSyncSession` is that engine plus CloudKit. It defines `CloudKitBackend`, whose setup steps are the zone and the subscription, and gives the core the two things only a backend knows: how to carry out a piece of work (`OperationHandler`, implemented by `CloudKitOperationHandler`) and what to do about each error the server can report (`FailureResolver`). The names an app uses, such as `SyncState`, `SyncEvent`, `FetchOperation` and `ModifyOperation`, are the core's types with CloudKit filled in. A library for another server can be built on the core in the same way.
+
+The session keeps queues of work: setup (for CloudKit, creating the zone and the subscription), modify, and fetch. They live in `SyncState`, which is also the snapshot published on `statePublisher`. Calls such as `modify(_:)`, `fetch(_:)`, `start()` and `stop()` change that state in one step, on the caller's thread, under a lock.
 
 A single task, the run loop, does the work. It takes the piece of work at the head of the queue, hands it to the operation handler, waits for the result, updates the queue for that result, and only then looks at the queue again. Nothing else in the library starts work, so one operation is in progress at a time and the order is the order of the queue.
 
@@ -205,8 +211,8 @@ In every case that sends work again, the replacement goes where the failed work 
 
 The decisions are made by small pieces that do not touch the session, each of which can be tested on its own:
 
-- `SyncState`: which work is next, and how the queues change for each outcome. Work to create the zone and the subscription always goes first. Modifies go before fetches, but the session finishes the kind of work it is doing before switching to the other. No work runs until the account is available, and no fetch or modify runs until the zone and subscription exist.
-- `FailureResolver`: maps a CloudKit error to one of the outcomes above.
+- `SyncState` (`SessionState` in the core): which work is next, and how the queues change for each outcome. Setup, which for CloudKit is creating the zone and the subscription, always goes first. Modifies go before fetches, but the session finishes the kind of work it is doing before switching to the other. No work runs until the account is available, and no fetch or modify runs until the zone and subscription exist.
+- `FailureResolver`: maps a CloudKit error to one of the outcomes above. This is the one piece on this list that belongs to the CloudKit layer.
 - `RetryPolicy`: how long to wait before a retry, and when to give up.
 - `ModifyOperation.split` and `splitInHalf`: how a modify is divided.
 - `Pacing`: how the session waits. The real one sleeps; tests substitute one that does not.
@@ -228,7 +234,9 @@ Two suites describe the session purely from the outside, through `SessionHarness
 - `SessionBehaviorTests`: behavior that must hold, such as ordering, retries, splitting, conflict resolution, and stopping.
 - `SessionQueueInvariantTests`: seeded random mixes of operations checked against queue invariants.
 
-The remaining suites test the pieces on their own:
+`AppFacingSurfaceTests` uses the library through `import CloudSyncSession` alone, the way an app does. It exists to stop building if a name an app depends on moves or changes shape.
+
+The remaining suites test the pieces on their own. The first two are in `Tests/SyncSessionCoreTests` and run against a small backend with nothing behind it, so they do not involve CloudKit at all:
 
 - `SyncStateTests`: which work is chosen next, how the queues change for each outcome, and the retry policy.
 - `SyncWorkTests`: how modify operations are split.

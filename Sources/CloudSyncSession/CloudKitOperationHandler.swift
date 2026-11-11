@@ -23,6 +23,7 @@
 
 import CloudKit
 import PID
+import SyncSessionCore
 
 /// An object that handles all of the key operations (fetch, modify, create zone, and create subscription) using the standard CloudKit APIs.
 public class CloudKitOperationHandler: OperationHandler {
