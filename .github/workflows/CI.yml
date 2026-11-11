@@ -11,10 +11,11 @@ on:
 
 jobs:
   build:
-    # The macos-15 image's default Xcode toolchain ships Swift 6.x, which the
-    # tools 6.0 manifest requires. swift-actions/setup-swift@v1 installs a
-    # Swift 5.x toolchain and cannot build this package.
-    runs-on: macos-15
+    # Build with the runner's default Xcode rather than a separately installed
+    # toolchain. The image must ship the macOS 26 SDK or later: ErrorMiddleware
+    # switches over CKError.Code.participantAlreadyInvited, which does not
+    # exist in earlier SDKs, so macos-15 (Xcode 16) fails to compile.
+    runs-on: macos-26
     steps:
     - uses: actions/checkout@v4
     - name: Build
