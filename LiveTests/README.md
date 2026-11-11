@@ -37,13 +37,14 @@ The tests use the Development environment and only zones they create (named `Liv
 
 ## What they have shown
 
-Recorded on 2026-11-11 on macOS 27.0 with Xcode 27.0. Not yet run on iOS.
+Recorded on 2026-11-11 with Xcode 27.0, on macOS 27.0 and on an iPhone 17 Pro running iOS 27.3 (24C5037i). All nine tests pass on both, and what they saw was the same on both, apart from timings.
 
 - A cancelled `CKModifyRecordsOperation` calls `modifyRecordsCompletionBlock` with `CKError.operationCancelled`, whether it is cancelled before it starts or while it is executing. The block runs before the operation is marked finished.
 - A cancelled `CKFetchRecordZoneChangesOperation` calls `fetchRecordZoneChangesResultBlock` with `operationCancelled` in both cases too. Its per-zone result block does not run.
 - Cancelling does not recall a request that has been sent. A modify of 200 records cancelled about 20 ms after it began executing left no records on the server, but one cancelled 150 ms in was reported as cancelled at once while all 200 records were saved. This is why `CloudKitOperationHandler` does not cancel an operation it has already handed to CloudKit.
 - A conflict on one record of a two-record batch arrives as `partialFailure` with `serverRecordChanged` for the conflicted record, carrying the server's copy, and `batchRequestFailed` for the other.
 - A fetch from a deleted zone fails with `zoneNotFound`.
+- A modify cancelled through `CloudKitOperationHandler` while it was with CloudKit was left to finish and returned its real result, all 200 records saved, about a second later. One cancelled while the handler was still holding it back returned at once and was never sent.
 - With a modify in progress, `stopAndWait()` returned after about half a second, and the zone, deleted straight afterwards, had not come back five seconds later.
 
 A Mac app must state `com.apple.developer.icloud-container-environment` in its entitlements. Without it every CloudKit call failed with "Couldn't get container configuration from the server". The project sets it to `Development`.
