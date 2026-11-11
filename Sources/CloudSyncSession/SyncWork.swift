@@ -161,7 +161,22 @@ public struct ModifyOperation: Identifiable, SyncOperation {
         return chunks
     }
 
-    var splitInHalf: [ModifyOperation] {
+    /// The two pieces to send instead after the server rejects this operation as too large, or nil
+    /// when it holds a single item and cannot be made any smaller.
+    var splitInHalf: [ModifyOperation]? {
+        guard records.count + recordIDsToDelete.count > 1 else {
+            return nil
+        }
+
+        guard records.count > 1 || recordIDsToDelete.count > 1 else {
+            // One save and one deletion. Halving each list on its own would produce an empty
+            // piece and this same operation again.
+            return [
+                ModifyOperation(records: records, recordIDsToDelete: [], checkpointID: nil, userInfo: userInfo),
+                ModifyOperation(records: [], recordIDsToDelete: recordIDsToDelete, checkpointID: checkpointID, userInfo: userInfo),
+            ]
+        }
+
         let firstHalfRecords = Array(records[0 ..< records.count / 2])
         let secondHalfRecords = Array(records[records.count / 2 ..< records.count])
 

@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 
 /// The state of a session.
@@ -163,8 +164,15 @@ public struct SyncState {
             operationMode = nil
         }
 
-        if operationMode == nil || !preferredOperationModes.contains(operationMode) {
-            operationMode = preferredOperationModes.first ?? nil
+        let preferredModes = preferredOperationModes
+        let mostPreferredMode = preferredModes.first ?? nil
+
+        // Creating the zone or the subscription always goes first, because fetches and modifies
+        // depend on them. Otherwise the session stays in its current mode until that queue is empty.
+        let mustSetUpFirst = mostPreferredMode == .createZone || mostPreferredMode == .createSubscription
+
+        if mustSetUpFirst || operationMode == nil || !preferredModes.contains(operationMode) {
+            operationMode = mostPreferredMode
         }
     }
 
@@ -210,80 +218,126 @@ public struct SyncState {
         }
     }
 
-    /// Update based on a sync event.
-    func reduce(event: SyncEvent) -> SyncState {
-        var state = self
+    /// Whether the work is still in its queue. It is not after the session has been reset.
+    func contains(_ work: SyncWork) -> Bool {
+        switch work {
+        case let .fetch(operation):
+            return fetchQueue.contains { $0.id == operation.id }
+        case let .modify(operation):
+            return modifyQueue.contains { $0.id == operation.id }
+        case let .createZone(operation):
+            return createZoneQueue.contains { $0.id == operation.id }
+        case let .createSubscription(operation):
+            return createSubscriptionQueue.contains { $0.id == operation.id }
+        }
+    }
 
-        switch event {
-        case let .accountStatusChanged(accountStatus):
-            switch accountStatus {
-            case .available:
-                state.hasGoodAccountStatus = true
-            default:
-                state.hasGoodAccountStatus = false
+    /// Whether a fetch from this change token is already waiting or under way.
+    func hasQueuedFetch(from changeToken: CKServerChangeToken?) -> Bool {
+        fetchQueue.contains { $0.changeToken == changeToken }
+    }
+
+    /// Add work to the end of its queue and pick it up if nothing else is under way.
+    mutating func enqueue(_ work: SyncWork) {
+        pushWork(work)
+        updateOperationMode()
+    }
+
+    /// Put other work in the place of work that is in a queue, keeping its position.
+    private mutating func replaceWork(_ work: SyncWork, with replacements: [SyncWork]) {
+        switch work {
+        case let .fetch(operation):
+            if let index = fetchQueue.firstIndex(where: { $0.id == operation.id }) {
+                fetchQueue.replaceSubrange(index ... index, with: replacements.compactMap {
+                    if case let .fetch(replacement) = $0 { return replacement } else { return nil }
+                })
             }
-            state.updateOperationMode()
-        case let .retryWork(work):
-            state.popWork(work: work)
-            state.pushWork(work.retried)
-            state.updateOperationMode()
-        case let .doWork(work):
-            state.pushWork(work)
-            state.updateOperationMode()
-        case let .split(work, _):
-            state.popWork(work: work)
-
-            switch work {
-            case let .modify(operation):
-                for splitOperation in operation.splitInHalf.reversed() {
-                    state.prioritizeWork(.modify(splitOperation))
-                }
-            default:
-                state.isHalted = true
+        case let .modify(operation):
+            if let index = modifyQueue.firstIndex(where: { $0.id == operation.id }) {
+                modifyQueue.replaceSubrange(index ... index, with: replacements.compactMap {
+                    if case let .modify(replacement) = $0 { return replacement } else { return nil }
+                })
             }
+        case let .createZone(operation):
+            if let index = createZoneQueue.firstIndex(where: { $0.id == operation.id }) {
+                createZoneQueue.replaceSubrange(index ... index, with: replacements.compactMap {
+                    if case let .createZone(replacement) = $0 { return replacement } else { return nil }
+                })
+            }
+        case let .createSubscription(operation):
+            if let index = createSubscriptionQueue.firstIndex(where: { $0.id == operation.id }) {
+                createSubscriptionQueue.replaceSubrange(index ... index, with: replacements.compactMap {
+                    if case let .createSubscription(replacement) = $0 { return replacement } else { return nil }
+                })
+            }
+        }
+    }
 
-            state.updateOperationMode()
-        case let .workFailure(work, _):
-            state.popWork(work: work)
-            state.updateOperationMode()
-        case let .workSuccess(work, result):
-            state.retryCount = 0
-            state.lastRetryError = nil
+    /// Update the queues for how an attempt at `work` ended. Work that is tried again, resent, or
+    /// split keeps its place: whatever replaces it goes where it was.
+    ///
+    /// Returns false and changes nothing if the work is no longer queued.
+    @discardableResult
+    mutating func apply(_ outcome: WorkOutcome, to work: SyncWork) -> Bool {
+        guard contains(work) else {
+            return false
+        }
 
-            state.popWork(work: work)
+        switch outcome {
+        case let .succeeded(result):
+            retryCount = 0
+            lastRetryError = nil
+
+            popWork(work: work)
 
             switch result {
             case let .fetch(response):
                 if response.hasMore {
-                    state.prioritizeWork(.fetch(FetchOperation(changeToken: response.changeToken)))
+                    prioritizeWork(.fetch(FetchOperation(changeToken: response.changeToken)))
                 }
             case let .createZone(didCreateZone):
-                state.hasCreatedZone = didCreateZone
+                hasCreatedZone = didCreateZone
             case let .createSubscription(didCreateSubscription):
-                state.hasCreatedSubscription = didCreateSubscription
-            default:
+                hasCreatedSubscription = didCreateSubscription
+            case .modify:
                 break
             }
+        case let .retryScheduled(error):
+            retryCount += 1
+            lastRetryError = error
+        case let .retrying(workToRetry):
+            replaceWork(work, with: [workToRetry.retried])
+        case let .replaced(operations):
+            replaceWork(work, with: operations.map(SyncWork.modify))
+        case let .zoneMissing(createZoneOperation):
+            replaceWork(work, with: [work.retried])
 
-            state.updateOperationMode()
-        case let .resolveConflict(work, records, recordIDsToDelete):
-            if case let .modify(failedOperation) = work {
-                let operation = ModifyOperation(records: records, recordIDsToDelete: recordIDsToDelete, checkpointID: work.checkpointID, userInfo: failedOperation.userInfo)
-
-                state.popWork(work: work)
-                state.pushWork(.modify(operation))
+            if createZoneQueue.isEmpty {
+                createZoneQueue.append(createZoneOperation)
             }
-        case .halt:
-            state.isHalted = true
-        case .start:
-            state.isHalted = false
-        case let .retry(_, error, _):
-            state.retryCount += 1
-            state.lastRetryError = error
-        case .noop:
-            break
         }
 
-        return state
+        updateOperationMode()
+
+        return true
     }
+}
+
+/// How one attempt at a piece of work ended, as far as the queues are concerned.
+enum WorkOutcome {
+    /// The work finished and leaves its queue. A fetch with more to come puts the next page first in line.
+    case succeeded(SyncWork.Result)
+
+    /// The work failed and will be tried again after a wait. It stays where it is.
+    case retryScheduled(Error)
+
+    /// The wait is over. The work to retry takes the failed work's place with its retry count raised.
+    case retrying(SyncWork)
+
+    /// These modify operations take the failed work's place, in order.
+    case replaced([ModifyOperation])
+
+    /// The zone is gone. The operation that recreates it is queued unless one already is, and the
+    /// failed work stays where it is with its retry count raised.
+    case zoneMissing(CreateZoneOperation)
 }

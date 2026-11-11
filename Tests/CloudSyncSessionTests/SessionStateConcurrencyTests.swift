@@ -11,7 +11,7 @@ private let concurrencyTestZoneID = CKRecordZone.ID(
 final class SessionStateConcurrencyTests: XCTestCase {
     private func makeSession() -> CloudSyncSession {
         CloudSyncSession(
-            operationHandler: SuccessfulMockOperationHandler(),
+            operationHandler: ScriptedOperationHandler(),
             zoneID: concurrencyTestZoneID,
             resolveConflict: { _, _ in nil },
             resolveExpiredChangeToken: { nil }
@@ -37,7 +37,7 @@ final class SessionStateConcurrencyTests: XCTestCase {
             .sink { _ in }
             .store(in: &tasks)
 
-        session.dispatch(event: .accountStatusChanged(.available))
+        session.accountStatusChanged(.available)
 
         wait(for: [reads], timeout: 5)
     }
@@ -47,7 +47,11 @@ final class SessionStateConcurrencyTests: XCTestCase {
         var tasks = Set<AnyCancellable>()
         let received = expectation(description: "current value")
 
-        session.state = SyncState(hasGoodAccountStatus: true)
+        session.accountStatusChanged(.available)
+
+        // The session hands changes to observers from its own queue. Wait for that, so the value
+        // below can only come from subscribing and not from the change being delivered.
+        session.flushOutput()
 
         session.statePublisher
             .sink { state in

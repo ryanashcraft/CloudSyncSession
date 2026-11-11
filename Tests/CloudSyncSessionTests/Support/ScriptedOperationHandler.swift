@@ -81,6 +81,9 @@ final class ScriptedOperationHandler: OperationHandler {
     private var fetchReplies: [FetchReply] = []
     private var createZoneReplies: [SetupReply] = []
 
+    private var isHoldingReplies = false
+    private var heldDeliveries: [() -> Void] = []
+
     // MARK: Scripting
 
     /// Replies for successive modify requests, whatever their tag. Once used up, requests succeed.
@@ -101,6 +104,34 @@ final class ScriptedOperationHandler: OperationHandler {
     /// Replies for successive create-zone requests. Once used up, they succeed.
     func scriptCreateZone(_ replies: SetupReply...) {
         withLock { createZoneReplies.append(contentsOf: replies) }
+    }
+
+    // MARK: Holding replies
+
+    /// From now on a reply is still chosen when its request arrives, but it is not delivered until
+    /// `releaseReplies()`. This is how a test acts while an operation is under way.
+    func holdReplies() {
+        withLock { isHoldingReplies = true }
+    }
+
+    /// Delivers the held replies and goes back to replying straight away.
+    func releaseReplies() {
+        let deliveries: [() -> Void] = withLock {
+            defer { heldDeliveries = [] }
+
+            isHoldingReplies = false
+
+            return heldDeliveries
+        }
+
+        for delivery in deliveries {
+            replyQueue.async(execute: delivery)
+        }
+    }
+
+    /// Whether a request has arrived whose reply is being held.
+    var hasHeldReply: Bool {
+        withLock { !heldDeliveries.isEmpty }
     }
 
     // MARK: Observation
@@ -225,10 +256,25 @@ final class ScriptedOperationHandler: OperationHandler {
     }
 
     private func finish(_ deliver: @escaping () -> Void) {
-        replyQueue.async {
-            deliver()
-
+        // A request stops being outstanding at the moment its reply is given. Counting it down
+        // afterwards would overlap with the next request, which the session may send from another
+        // thread as soon as it has this reply.
+        let delivery = {
             self.withLock { self.inFlightCount -= 1 }
+
+            deliver()
+        }
+
+        let isHeld: Bool = withLock {
+            if isHoldingReplies {
+                heldDeliveries.append(delivery)
+            }
+
+            return isHoldingReplies
+        }
+
+        if !isHeld {
+            replyQueue.async(execute: delivery)
         }
     }
 }
