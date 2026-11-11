@@ -34,7 +34,11 @@ public class CloudKitOperationHandler: OperationHandler {
     let subscriptionID: String
     let savePolicy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged
     let qos: QualityOfService = .userInitiated
-    var rateLimitController = RateLimitPIDController(
+    /// Guards rateLimitController, throttleDuration, and nextOperationDeadline,
+    /// which are mutated from CloudKit callback threads and read when queueing.
+    private let throttleLock = NSLock()
+
+    private var rateLimitController = RateLimitPIDController(
         kp: 2,
         ki: 0.05,
         kd: 0.02,
@@ -51,7 +55,7 @@ public class CloudKitOperationHandler: OperationHandler {
         return queue
     }()
 
-    var throttleDuration: TimeInterval {
+    private var throttleDuration: TimeInterval {
         didSet {
             nextOperationDeadline = DispatchTime.now() + throttleDuration
 
@@ -63,7 +67,7 @@ public class CloudKitOperationHandler: OperationHandler {
         }
     }
 
-    var nextOperationDeadline: DispatchTime?
+    private var nextOperationDeadline: DispatchTime?
 
     public init(database: CKDatabase, zoneID: CKRecordZone.ID, subscriptionID: String) {
         self.database = database
@@ -73,7 +77,9 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 
     private func queueOperation(_ operation: Operation) {
+        throttleLock.lock()
         let deadline: DispatchTime = nextOperationDeadline ?? DispatchTime.now()
+        throttleLock.unlock()
 
         DispatchQueue.main.asyncAfter(deadline: deadline) {
             self.operationQueue.addOperation(operation)
@@ -81,22 +87,30 @@ public class CloudKitOperationHandler: OperationHandler {
     }
 
     private func onOperationSuccess() {
+        throttleLock.lock()
+        defer { throttleLock.unlock() }
+
         rateLimitController.record(outcome: .success)
         throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
     }
 
     private func onOperationError(_ error: Error) {
-        if let ckError = error as? CKError {
-            rateLimitController.record(outcome: ckError.indicatesShouldBackoff ? .failure : .success)
+        guard let ckError = error as? CKError else {
+            return
+        }
 
-            if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
-                Log.operations.info("CloudKit error suggests retrying after \(suggestedBackoffSeconds) seconds")
+        throttleLock.lock()
+        defer { throttleLock.unlock() }
 
-                // Respect the amount suggested for the next operation
-                throttleDuration = suggestedBackoffSeconds
-            } else {
-                throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
-            }
+        rateLimitController.record(outcome: ckError.indicatesShouldBackoff ? .failure : .success)
+
+        if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
+            Log.operations.info("CloudKit error suggests retrying after \(suggestedBackoffSeconds) seconds")
+
+            // Respect the amount suggested for the next operation
+            throttleDuration = suggestedBackoffSeconds
+        } else {
+            throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
         }
     }
 
