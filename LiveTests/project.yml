@@ -1,0 +1,59 @@
+# Generates LiveTests.xcodeproj: a host app that carries the CloudKit entitlement and a test
+# bundle that runs inside it against a real CloudKit container. See README.md.
+name: LiveTests
+options:
+  deploymentTarget:
+    iOS: "15.0"
+    macOS: "12.0"
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
+packages:
+  CloudSyncSession:
+    path: ..
+targets:
+  LiveTestsHost:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources: [Host]
+    info:
+      path: Generated/Info.plist
+      properties:
+        LiveTestsContainerID: $(LIVE_TESTS_CONTAINER_ID)
+        UILaunchScreen: {}
+    entitlements:
+      path: Generated/Host.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers: [$(LIVE_TESTS_CONTAINER_ID)]
+        com.apple.developer.icloud-services: [CloudKit]
+        # Stated outright so these tests can never run against the Production environment.
+        com.apple.developer.icloud-container-environment: Development
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(LIVE_TESTS_BUNDLE_ID)
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+  LiveTests:
+    type: bundle.unit-test
+    supportedDestinations: [iOS, macOS]
+    sources: [Tests]
+    dependencies:
+      - target: LiveTestsHost
+      - package: CloudSyncSession
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(LIVE_TESTS_BUNDLE_ID).tests
+        # Spelled out so that it resolves on macOS, where the executable is inside Contents/MacOS.
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/LiveTestsHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/LiveTestsHost
+        BUNDLE_LOADER: $(TEST_HOST)
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+schemes:
+  LiveTests:
+    build:
+      targets:
+        LiveTestsHost: all
+        LiveTests: [test]
+    test:
+      targets: [LiveTests]

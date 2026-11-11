@@ -1,0 +1,11 @@
+// Copy to Local.xcconfig (which is not checked in) and fill in.
+
+// The Apple Developer team to sign with.
+DEVELOPMENT_TEAM = XXXXXXXXXX
+
+// Any bundle identifier the team can register.
+LIVE_TESTS_BUNDLE_ID = com.example.CloudSyncSessionLiveTests
+
+// A CloudKit container kept for these tests. They only touch the Development environment and
+// only zones they create, but do not point this at a container that holds data you care about.
+LIVE_TESTS_CONTAINER_ID = iCloud.com.example.CloudSyncSessionLiveTests
