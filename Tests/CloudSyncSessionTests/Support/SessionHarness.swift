@@ -20,7 +20,7 @@ enum Completion: Equatable, CustomStringConvertible {
 
 /// The kinds of event the session announces, without their payloads.
 enum ObservedEvent: Equatable {
-    case start, halt, accountStatusChanged, doWork, retryWork, workFailure, workSuccess, resolveConflict, retry, split, noop
+    case start, halt, accountStatusChanged, doWork, retryWork, workFailure, workSuccess, resolveConflict, retry, split
 }
 
 /// What the session's conflict resolver does when a save collides with a newer server record.
@@ -34,8 +34,11 @@ enum ConflictPolicy {
 /// in terms that do not depend on how the session is built.
 ///
 /// Behavior tests talk only to this type. They never import the library, so they cannot reach
-/// into the session's state, events, or middleware, and they keep working when those change.
+/// into the session's state or events, and they keep working when those change.
 /// Whatever the session's interface becomes, this file is the one place that adapts to it.
+///
+/// The session's waits (the gap before work, the backoff before a retry) end at once unless a
+/// test holds them, so nothing here runs in real time.
 ///
 /// Use it from the main thread: `settle` spins the main run loop, which is also where the
 /// session delivers completions.
@@ -54,15 +57,13 @@ final class SessionHarness {
     private let eventsLock = NSLock()
     private var observedEvents: [ObservedEvent] = []
     private var startupCallCount = 0
-
-    /// How long the session must stay idle before `settle` believes it. It has to outlast the
-    /// session's own delay between queueing work and handing it to the handler.
-    private static let quietPeriod: TimeInterval = 0.25
+    private let pacing = ScriptedPacing()
 
     init(conflictPolicy: ConflictPolicy = .clientWins) {
         session = CloudSyncSession(
             operationHandler: handler,
             zoneID: CKRecordZone.ID(zoneName: "harness", ownerName: CKCurrentUserDefaultName),
+            accountStatusProvider: nil,
             resolveConflict: { clientRecord, serverRecord in
                 switch conflictPolicy {
                 case .clientWins:
@@ -73,14 +74,12 @@ final class SessionHarness {
                     return nil
                 }
             },
-            resolveExpiredChangeToken: { nil }
+            resolveExpiredChangeToken: { nil },
+            pacing: pacing.pacing
         )
 
-        // Stands in for AccountStatusMiddleware, which needs a real CKContainer. Done before
-        // anything is dispatched so it cannot interleave with the session's own state updates.
-        var state = session.state
-        state.hasGoodAccountStatus = true
-        session.state = state
+        // Stands in for an account status provider, which needs a real CKContainer.
+        session.accountStatusChanged(.available)
 
         session.modifyWorkCompletedSubject
             .sink { [weak self] operation, response in
@@ -139,6 +138,30 @@ final class SessionHarness {
         session.stop()
     }
 
+    /// Calls the session's `stopAndWait()` in the background. The returned closure reports, whenever
+    /// it is asked, whether that call has returned yet.
+    func beginStopAndWait() -> () -> Bool {
+        let hasReturned = Flag()
+
+        Task { [session] in
+            await session.stopAndWait()
+
+            hasReturned.set()
+        }
+
+        return { hasReturned.isSet }
+    }
+
+    /// Resets the session, which also forgets the account status.
+    func reset() {
+        session.reset()
+    }
+
+    /// Tells the session whether the iCloud account can be used.
+    func setAccountAvailable(_ isAvailable: Bool) {
+        session.accountStatusChanged(isAvailable ? .available : .noAccount)
+    }
+
     /// Queues a modify operation labelled with `tag`.
     func modify(_ tag: String, saves: Int = 1, deletes: Int = 0, checkpoint: Bool = false) {
         session.modify(
@@ -156,36 +179,91 @@ final class SessionHarness {
         session.fetch(FetchOperation(changeToken: nil))
     }
 
-    /// Waits until the session has nothing left to do: no request outstanding at the handler and
-    /// either no work queued or the session halted, continuously for a short quiet period.
+    /// Waits until the session has nothing left to do and has reported everything it did. That is
+    /// the case when its queue is empty, when it is halted, and when it is waiting for the account
+    /// to become available.
     ///
-    /// Records a test failure and returns false if that does not happen within `timeout`.
+    /// Records a test failure and returns false if that does not happen within `timeout`. It cannot
+    /// happen while a test is holding a wait or a reply.
     @discardableResult
     func settle(timeout: TimeInterval = 5, file: StaticString = #filePath, line: UInt = #line) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        var quietSince: Date?
 
         while Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
-
             guard isQuiet else {
-                quietSince = nil
+                RunLoop.main.run(until: Date().addingTimeInterval(0.001))
 
                 continue
             }
 
-            if let quietSince {
-                if Date().timeIntervalSince(quietSince) >= Self.quietPeriod {
-                    return true
-                }
-            } else {
-                quietSince = Date()
+            deliverPendingOutput()
+
+            // An observer may have queued more work while it was being told about the last of it.
+            if isQuiet {
+                return true
             }
         }
 
         XCTFail("Session did not settle within \(timeout)s. Handler calls so far: \(handler.calls.count)", file: file, line: line)
 
         return false
+    }
+
+    /// Spins the main run loop until `condition` holds. Records a test failure and returns false
+    /// if it does not within `timeout`.
+    @discardableResult
+    func waitUntil(
+        _ description: String,
+        timeout: TimeInterval = 5,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ condition: () -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            if condition() {
+                return true
+            }
+
+            RunLoop.main.run(until: Date().addingTimeInterval(0.001))
+        }
+
+        XCTFail("Timed out waiting until \(description)", file: file, line: line)
+
+        return false
+    }
+
+    /// Spins the main run loop for a moment, to give something that should not happen the chance to.
+    func idle(for duration: TimeInterval = 0.05) {
+        RunLoop.main.run(until: Date().addingTimeInterval(duration))
+    }
+
+    // MARK: Holding the session mid-flight
+
+    /// Holds the session in the gap it leaves before sending work, until `releaseWaits()` or until
+    /// the session itself cuts the wait short.
+    func holdWorkDelay() {
+        pacing.holdWorkDelay()
+    }
+
+    /// Holds the session in its wait before a retry, in the same way.
+    func holdRetryBackoff() {
+        pacing.holdRetryBackoff()
+    }
+
+    func releaseWaits() {
+        pacing.release()
+    }
+
+    /// Waits until the session has reached a wait that is being held.
+    func waitUntilWaiting(file: StaticString = #filePath, line: UInt = #line) {
+        waitUntil("the session is in a held wait", file: file, line: line) { pacing.isHolding }
+    }
+
+    /// Waits until a request has reached the handler and its reply is being held.
+    func waitUntilReplyIsHeld(file: StaticString = #filePath, line: UInt = #line) {
+        waitUntil("a reply is being held", file: file, line: line) { handler.hasHeldReply }
     }
 
     /// Halts the session so nothing keeps running after the test. Registered by `makeHarness`.
@@ -227,6 +305,11 @@ final class SessionHarness {
         return observedEvents.filter { $0 == kind }.count
     }
 
+    /// How long the session waited before each retry, in seconds and in order.
+    var retryBackoffs: [TimeInterval] {
+        pacing.retryBackoffs
+    }
+
     /// Creates a session, drops every reference to it, and reports whether it was deallocated.
     static func sessionIsReleasedWhenDropped() -> Bool {
         weak var weakSession: CloudSyncSession?
@@ -247,12 +330,70 @@ final class SessionHarness {
         return weakSession == nil
     }
 
+    /// Runs a session through startup and one modify, drops every reference to it, and reports
+    /// whether it was deallocated.
+    static func sessionIsReleasedAfterWorking() -> Bool {
+        weak var weakSession: CloudSyncSession?
+
+        autoreleasepool {
+            let harness = SessionHarness()
+
+            harness.startRunning()
+            harness.modify("A")
+            harness.settle()
+            harness.shutDown()
+
+            weakSession = harness.session
+        }
+
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        return weakSession == nil
+    }
+
     // MARK: Private
 
+    /// Nothing is under way in the session or at the handler, so nothing more will happen until
+    /// the test does something.
     private var isQuiet: Bool {
-        let state = session.state
+        session.isIdle && handler.isIdle
+    }
 
-        return handler.isIdle && (state.isHalted || !state.hasWorkQueued)
+    /// Returns once observers have been told about everything the session has done so far.
+    private func deliverPendingOutput() {
+        session.flushOutput()
+
+        // Completions are delivered on the main queue. This block runs after the ones the flush
+        // queued there.
+        var isDelivered = false
+
+        DispatchQueue.main.async {
+            isDelivered = true
+        }
+
+        while !isDelivered {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+    }
+}
+
+/// A boolean that can be set from one thread and read from another.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return value
+    }
+
+    func set() {
+        lock.lock()
+        defer { lock.unlock() }
+
+        value = true
     }
 }
 
@@ -279,8 +420,6 @@ private extension ObservedEvent {
             self = .retry
         case .split:
             self = .split
-        case .noop:
-            self = .noop
         }
     }
 }

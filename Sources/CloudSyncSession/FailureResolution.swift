@@ -24,30 +24,37 @@
 import CloudKit
 import Foundation
 
-struct ErrorMiddleware: Middleware {
-    var session: CloudSyncSession
+/// What the session should do about work that failed.
+enum FailureResolution {
+    /// Stop until the app starts the session again. The work keeps its place in the queue.
+    case halt(Error)
 
-    func run(next: (SyncEvent) -> SyncEvent, event: SyncEvent) -> SyncEvent {
-        switch event {
-        case let .workFailure(work, error):
-            if let event = mapErrorToEvent(error: error, work: work, zoneID: session.zoneID) {
-                if case .doWork(.createZone) = event {
-                    session.dispatch(event: event)
-                    session.dispatch(event: .retryWork(work))
+    /// Try again after a wait. Carries the work to retry, which differs from the failed work when
+    /// a fetch has to restart from a fresh change token.
+    case retry(SyncWork, Error, TimeInterval?)
 
-                    return next(.workFailure(work, error))
-                }
+    /// Send a modify again with these records and deletions, after resolving conflicts and
+    /// leaving out what the server no longer has.
+    case resend(records: [CKRecord], recordIDsToDelete: [CKRecord.ID])
 
-                return next(event)
-            }
+    /// The server rejected the request as too large; send it in smaller pieces.
+    case split(Error)
 
-            return next(event)
-        default:
-            return next(event)
-        }
-    }
+    /// The zone is gone. Create it again, then try the work again.
+    case recreateZone(Error)
+}
 
-    func mapErrorToEvent(error: Error, work: SyncWork, zoneID: CKRecordZone.ID) -> SyncEvent? {
+/// Decides what to do about a failure. It changes nothing in the session. Its only side effects
+/// are calls to the app's conflict and change-token resolvers, and writing the resolved fields
+/// into the server's copy of a conflicted record, which is the record that gets sent again.
+struct FailureResolver {
+    /// The function handler that will be called to resolve record conflicts.
+    let resolveConflict: ConflictResolver?
+
+    /// The function handler that will be called when the change token should be expired.
+    let resolveExpiredChangeToken: ChangeTokenExpiredResolver?
+
+    func resolution(for error: Error, work: SyncWork) -> FailureResolution {
         if let ckError = error as? CKError {
             Log.error.error("Handling CloudKit error (code \(ckError.errorCode)): \(ckError.localizedDescription)")
 
@@ -90,7 +97,7 @@ struct ErrorMiddleware: Middleware {
 
                 switch work {
                 case var .fetch(modifiedOperation):
-                    modifiedOperation.changeToken = resolveExpiredChangeToken()
+                    modifiedOperation.changeToken = resolveExpiredChangeToken?()
 
                     return .retry(.fetch(modifiedOperation), error, suggestedInterval)
                 default:
@@ -109,7 +116,7 @@ struct ErrorMiddleware: Middleware {
                         return .halt(error)
                     }
 
-                    return mapErrorToEvent(error: error, work: work, zoneID: zoneID)
+                    return resolution(for: error, work: work)
                 case let .modify(operation):
                     // Supported modify partial failures: batchRequestFailed and serverRecordChanged
 
@@ -180,7 +187,7 @@ struct ErrorMiddleware: Middleware {
                     // Resolved records
                     let resolvedConflictsToSave = serverRecordChangedErrors
                         .compactMap { error in
-                            self.resolveConflict(error: error)
+                            self.resolvedRecord(for: error)
                         }
 
                     if resolvedConflictsToSave.count != serverRecordChangedErrors.count {
@@ -208,21 +215,21 @@ struct ErrorMiddleware: Middleware {
 
                     let allResolvedRecordsToSave = batchRequestFailureRecordsToSave + resolvedConflictsToSave
 
-                    return .resolveConflict(work, allResolvedRecordsToSave, recordIDsToDeleteWithoutUnknowns)
+                    return .resend(records: allResolvedRecordsToSave, recordIDsToDelete: recordIDsToDeleteWithoutUnknowns)
                 default:
                     return .halt(error)
                 }
             case .serverRecordChanged:
-                guard let resolvedConflictToSave = resolveConflict(error: error) else {
+                guard let resolvedConflictToSave = resolvedRecord(for: error) else {
                     // If couldn't handle conflict for the records, abort
                     return .halt(error)
                 }
 
-                return .resolveConflict(work, [resolvedConflictToSave], [])
+                return .resend(records: [resolvedConflictToSave], recordIDsToDelete: [])
             case .limitExceeded:
-                return .split(work, error)
+                return .split(error)
             case .zoneNotFound, .userDeletedZone:
-                return .doWork(.createZone(CreateZoneOperation(zoneID: zoneID)))
+                return .recreateZone(error)
             case .assetNotAvailable,
                  .assetFileNotFound,
                  .assetFileModified,
@@ -235,16 +242,19 @@ struct ErrorMiddleware: Middleware {
                  .accountTemporarilyUnavailable:
                 return .halt(error)
             @unknown default:
-                return nil
+                // A code this version of the library does not know. Halting keeps the work
+                // queued; anything else risks dropping it.
+                return .halt(error)
             }
         } else {
             return .halt(error)
         }
     }
 
-    func resolveConflict(error: Error) -> CKRecord? {
+    /// Runs the app's conflict resolver for one `serverRecordChanged` error and returns the record to save.
+    func resolvedRecord(for error: Error) -> CKRecord? {
         guard let effectiveError = error as? CKError else {
-            Log.error.critical("resolveConflict called on an error that was not a CKError. The error was \(String(describing: self))")
+            Log.error.critical("resolveConflict called on an error that was not a CKError. The error was \(String(describing: error))")
 
             return nil
         }
@@ -269,7 +279,7 @@ struct ErrorMiddleware: Middleware {
 
         Log.error.error("CloudKit conflict with record of type \(serverRecord.recordType). Running conflict resolver")
 
-        guard let resolveConflict = session.resolveConflict else {
+        guard let resolveConflict else {
             return nil
         }
 
@@ -290,39 +300,5 @@ struct ErrorMiddleware: Middleware {
         }
 
         return serverRecord
-    }
-
-    func resolveExpiredChangeToken() -> CKServerChangeToken? {
-        guard let resolveExpiredChangeToken = session.resolveExpiredChangeToken else {
-            return nil
-        }
-
-        return resolveExpiredChangeToken()
-    }
-}
-
-extension CKRecord {
-    func removeAllFields() {
-        let encryptedKeys = Set(encryptedValues.allKeys())
-
-        allKeys().forEach { key in
-            if encryptedKeys.contains(key) {
-                encryptedValues[key] = nil
-            } else {
-                self[key] = nil
-            }
-        }
-    }
-
-    func copyFields(from otherRecord: CKRecord) {
-        let encryptedKeys = Set(otherRecord.encryptedValues.allKeys())
-
-        otherRecord.allKeys().forEach { key in
-            if encryptedKeys.contains(key) {
-                encryptedValues[key] = otherRecord.encryptedValues[key]
-            } else {
-                self[key] = otherRecord[key]
-            }
-        }
     }
 }

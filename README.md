@@ -11,7 +11,7 @@ Similar to [NSPersistentCloudKitContainer](https://developer.apple.com/documenta
 1. Persistence-free. Data is not persisted to disk.
 2. Testable. Code is structured in a way to maximize how much behavior can be tested.
 3. Modular. To the extent that it makes sense, different behaviors are handled separately by different components.
-4. Event-based. State is predictable, as it is updated based on the series of events that have previously occurred.
+4. Sequential. One piece of work is in progress at a time, and what happens next is decided in one place, so the order of work is predictable.
 5. Resilient. Recoverable errors are gracefully handled using retries and backoffs. Non-recoverable errors halt further execution until the app signals that work should be resumed.
 6. Inspectable. The current state of the session can be evaluated for troubleshooting and diagnostics.
 7. Focused. This project aims to solve a particular use case and do it well.
@@ -24,32 +24,23 @@ Similar to [NSPersistentCloudKitContainer](https://developer.apple.com/documenta
 static let storeIdentifier: String
 static let zoneID: CKRecordZone.ID
 static let subscriptionID: String
-static let log: OSLog
 
 static func makeSharedSession() -> CloudSyncSession {
     let container = CKContainer(identifier: Self.storeIdentifier)
     let database = container.privateCloudDatabase
 
-    let session = CloudSyncSession(
+    return CloudSyncSession(
         operationHandler: CloudKitOperationHandler(
             database: database,
             zoneID: Self.zoneID,
-            subscriptionID: Self.subscriptionID,
-            log: Self.log
+            subscriptionID: Self.subscriptionID
         ),
         zoneID: Self.zoneID,
+        // Asked for the iCloud account status whenever the session starts without knowing it
+        accountStatusProvider: CloudSyncSession.accountStatusProvider(for: container),
         resolveConflict: resolveConflict,
         resolveExpiredChangeToken: resolveExpiredChangeToken
     )
-
-    session.appendMiddleware(
-        AccountStatusMiddleware(
-            session: session,
-            ckContainer: container
-        )
-    )
-
-    return session
 }
 
 static func resolveConflict(clientCkRecord: CKRecord, serverCkRecord: CKRecord) -> CKRecord? {
@@ -178,29 +169,51 @@ cloudSyncSession.eventsPublisher
     }
 ```
 
+8. Stop the session before destructive work.
+
+```swift
+// Returns once the operation that was in progress, if any, has finished,
+// so nothing sent earlier can land after what you do next
+await cloudSyncSession.stopAndWait()
+cloudSyncSession.reset()
+
+// Delete the zone, sign out, etc.
+```
+
+If the account status changes while the app is running, tell the session with `cloudSyncSession.accountStatusChanged(_:)`.
+
 ## Installation
 
 To use CloudSyncSession with Swift Package Manager, add a dependency to https://github.com/ryanashcraft/CloudSyncSession
 
 ## Under the Hood
 
-CloudSyncSession is event-based. Events describe what has occurred, or what has been requested. The current state of the session is a result of the previous events up to that point.
+CloudSyncSession keeps four queues of work, one per kind: create zone, create subscription, modify, and fetch. They live in `SyncState`, which is also the snapshot published on `statePublisher`. Calls such as `modify(_:)`, `fetch(_:)`, `start()` and `stop()` change that state in one step, on the caller's thread, under a lock.
 
-CloudSyncSession uses the concept of event middleware in an effort to decouple and modularize independent behaviors. Middleware are ordered; they can transform events before they are passed along to the following middleware. They can also trigger side effects.
+A single task, the run loop, does the work. It takes the piece of work at the head of the queue, hands it to the operation handler, waits for the result, updates the queue for that result, and only then looks at the queue again. Nothing else in the library starts work, so one operation is in progress at a time and the order is the order of the queue.
 
-By default, the following middleware are initialized:
+What the run loop does with a result:
 
-- `SplittingMiddleware`: Handles splitting up large work.
-- `ErrorMiddleware`: Transforms CloudKit errors into a new event (e.g. `retry`, `halt`, `resolveConflict`, etc.).
-- `RetryMiddleware`: Handles how to handle work that was marked to be retried.
-- `WorkMiddleware`: Handles translating events into calls on the operation handler, and dispatches new events based on the result.
-- `SubjectMiddleware`: Sends values to the various Combine subjects on the CloudSyncSession instance.
-- `LoggerMiddleware`: Logs all events with os_log.
-- `ZoneMiddleware`: On session start, dispatches events to queue work to create the zone and associated subscription.
+- Success: the work leaves the queue and is reported on `fetchWorkCompletedSubject` or `modifyWorkCompletedSubject`. A fetch with more to come puts its next page first in line.
+- A failure worth retrying (network, rate limiting, an expired change token): the loop waits, then sends the work again. Waits grow with each retry, and after five retries the session halts.
+- A conflict: the app's conflict resolver runs and the batch is sent again with the resolved records.
+- A request the server rejects as too large: it is sent again as two halves.
+- A missing zone: the zone is created again, then the work is sent again.
+- Anything else: the session halts and reports the error on `haltedSubject`. The work stays queued for the next `start()`.
 
-In addition, the `AccountStatusMiddleware` is required, but not initialized by default. This middleware checks the account status on session start.
+In every case that sends work again, the replacement goes where the failed work was, ahead of everything queued after it.
 
-CloudSyncSession state transitions between different "operation modes" to determine which sort of work is to be handled: none (represented by `nil`), `createZone`, `createSubscription`, `modify`, and `fetch`. Work is queued up into separate queues, one for each operation mode. The state only operates in one operation mode at a time. Operation modes are made eligible or ineligible by certain events that occur (e.g. account status changes and errors). Operation modes are ordered, so work to create a zone always precedes work modification work, which likewise precedes fetch work.
+The decisions are made by small pieces that do not touch the session, each of which can be tested on its own:
+
+- `SyncState`: which work is next, and how the queues change for each outcome. Work to create the zone and the subscription always goes first. Modifies go before fetches, but the session finishes the kind of work it is doing before switching to the other. No work runs until the account is available, and no fetch or modify runs until the zone and subscription exist.
+- `FailureResolver`: maps a CloudKit error to one of the outcomes above.
+- `RetryPolicy`: how long to wait before a retry, and when to give up.
+- `ModifyOperation.split` and `splitInHalf`: how a modify is divided.
+- `Pacing`: how the session waits. The real one sleeps; tests substitute one that does not.
+
+`eventsPublisher` announces each step (`doWork`, `workSuccess`, `workFailure`, `retry`, `halt`, and so on) once, for diagnostics. Events describe what happened; they do not drive the session.
+
+`stop()` halts the session: no further work is sent, and a wait before work or before a retry ends at once. An operation that is already with the operation handler runs to its end. If it succeeds, that is still reported; if it fails while the session is still stopped, the failure is not acted on and the work is sent again on the next `start()`. `stopAndWait()` does the same and returns only when that operation has finished. `reset()` discards the queues and ignores the result of an operation in progress.
 
 ## Tests
 
@@ -208,15 +221,17 @@ In an effort to make as much of the logic and behavior testable, most CloudKit-s
 
 `OperationHandler` is a protocol that abstracts the handling all of the various operations: `FetchOperation`, `ModifyOperation`, `CreateZoneOperation`, and `CreateSubscriptionOperation`. The main implementation of this protocol, `CloudKitOperationHandler`, handles these operations using the standard CloudKit APIs.
 
-There are two test suites: `CloudSyncSessionTests` and `SyncStateTests`. `CloudSyncSessionTests` uses custom `OperationHandler` instances to simulate different scenarios and test end-to-end behaviors, including retries, splitting up work, handling success and failure, etc.
+Two suites describe the session purely from the outside, through `SessionHarness` and a `ScriptedOperationHandler` in `Tests/CloudSyncSessionTests/Support`. A test scripts how the handler replies, submits work, and asserts on the requests the handler received and the completions the session reported. These test files do not import the library, so they do not depend on how the session is built. The harness replaces the session's waits with ones that end at once, so retries and backoff are tested without waiting in real time, and it can hold a wait or a reply open to test what happens when the session is stopped or reset partway through.
 
-`SyncStateTests` asserts that the state is correctly updated based on certain events.
-
-Three further suites describe the session purely from the outside, through `SessionHarness` and a `ScriptedOperationHandler` in `Tests/CloudSyncSessionTests/Support`. A test scripts how the handler replies, submits work, and asserts on the requests the handler received and the completions the session reported. These test files do not import the library, so they do not depend on how the session is built.
-
-- `SessionBehaviorTests`: behavior that must hold, such as ordering, retries, splitting, and conflict resolution.
-- `SessionKnownDefectTests`: correct behavior the session does not have yet, each wrapped in a strict `XCTExpectFailure`. When a defect is fixed its test reports an unexpected pass and should move to `SessionBehaviorTests`.
+- `SessionBehaviorTests`: behavior that must hold, such as ordering, retries, splitting, conflict resolution, and stopping.
 - `SessionQueueInvariantTests`: seeded random mixes of operations checked against queue invariants.
+
+The remaining suites test the pieces on their own:
+
+- `SyncStateTests`: which work is chosen next, how the queues change for each outcome, and the retry policy.
+- `SyncWorkTests`: how modify operations are split.
+- `CloudKitSupportTests`: helpers that sit between the session and CloudKit.
+- `SessionStateConcurrencyTests`: reading the state from several threads.
 
 ## Limitations
 
@@ -244,8 +259,6 @@ I developed CloudSyncSession because there were a few things I was looking for i
 - Many CloudKit libraries do not have much, if any, automated testing around the lifecycle and state management of the sync engine. CloudKit itself is extremely difficult to test in an automated fashion, because anything meaningful requires a device with a valid CloudKit account. I wanted some level of decoupling of CloudKit with the state management aspect of the library, so I could at least test most of the logic that didn't directly interface with CloudKit.
 
 These are all tradeoffs. Cirrus is a great library and likely a better fit for many apps.
-
-The event-based architecture was heavily influenced by [Redux](https://github.com/reduxjs/redux).
 
 ## Contributions
 

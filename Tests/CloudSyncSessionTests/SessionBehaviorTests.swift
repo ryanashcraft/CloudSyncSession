@@ -240,4 +240,407 @@ final class SessionBehaviorTests: XCTestCase {
         XCTAssertEqual(harness.completions, [.modify("A", saved: 2)])
         XCTAssertFalse(harness.isHalted)
     }
+
+    func testPartialFailureWithoutPerRecordErrorsHalts() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(.fail(.partialFailure))
+        harness.startRunning()
+
+        harness.modify("A")
+        harness.settle()
+
+        XCTAssertTrue(harness.isHalted)
+        XCTAssertEqual(harness.haltCode, .partialFailure)
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1)])
+        XCTAssertTrue(harness.hasWorkQueued)
+    }
+
+    func testErrorCodeTheLibraryDoesNotKnowHaltsAndKeepsTheWork() throws {
+        let unknownCode = try XCTUnwrap(CKError.Code(rawValue: 9999))
+        let harness = makeHarness()
+        harness.handler.scriptModify(.fail(unknownCode))
+        harness.startRunning()
+
+        harness.modify("A")
+        harness.settle()
+
+        XCTAssertTrue(harness.isHalted)
+        XCTAssertEqual(harness.haltCode, unknownCode)
+        XCTAssertTrue(harness.hasWorkQueued)
+        XCTAssertEqual(harness.completions, [])
+    }
+
+    // MARK: Retrying
+
+    func testRetriesWaitLongerEachTimeAndHaltAfterFive() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(rule: { _ in .fail(.networkUnavailable) })
+        harness.startRunning()
+
+        harness.modify("A")
+        harness.modify("B")
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, Array(repeating: .modify("A", saves: 1), count: 6), "One attempt and five retries, with B still waiting")
+        XCTAssertEqual(harness.retryBackoffs, [0, 1, 4, 9, 16])
+        XCTAssertTrue(harness.isHalted)
+        XCTAssertEqual(harness.haltCode, .networkUnavailable)
+        XCTAssertTrue(harness.hasWorkQueued)
+        XCTAssertEqual(harness.completions, [])
+
+        harness.handler.scriptModify(rule: { _ in nil })
+        harness.start()
+        harness.settle()
+
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1), .modify("B", saved: 1)])
+        XCTAssertFalse(harness.isHalted)
+    }
+
+    // MARK: Keeping order
+
+    func testRetriedModifyKeepsItsPlaceInLine() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(.fail(.networkUnavailable))
+        harness.startRunning()
+
+        harness.modify("A")
+        harness.modify("B")
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .modify("A", saves: 1), .modify("B", saves: 1)])
+    }
+
+    func testConflictedModifyKeepsItsPlaceInLine() {
+        let harness = makeHarness(conflictPolicy: .clientWins)
+        harness.handler.scriptModify(.partialFailure([0: .serverRecordChanged]))
+        harness.startRunning()
+
+        harness.modify("A")
+        harness.modify("B")
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .modify("A", saves: 1), .modify("B", saves: 1)])
+    }
+
+    func testOversizedModifyKeepsItsPlaceInLine() {
+        let harness = makeHarness()
+        harness.startRunning()
+
+        harness.modify("big", saves: 800)
+        harness.modify("small")
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("big", saves: 400), .modify("big", saves: 400), .modify("small", saves: 1)])
+    }
+
+    func testMissingZoneIsRecreatedBeforeAnyQueuedModifyGoesOut() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(.fail(.zoneNotFound))
+        harness.startRunning()
+
+        harness.modify("A")
+        harness.modify("B")
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .createZone, .modify("A", saves: 1), .modify("B", saves: 1)])
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1), .modify("B", saved: 1)])
+        XCTAssertFalse(harness.isHalted)
+    }
+
+    // MARK: Requests that cannot be made smaller
+
+    func testSingleRecordRejectedAsTooLargeDoesNotLoop() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(rule: { $0.saves > 0 ? .fail(.limitExceeded) : nil })
+        harness.startRunning()
+
+        harness.modify("A")
+        harness.settle(timeout: 2)
+
+        XCTAssertLessThanOrEqual(harness.workCalls.count, 3)
+        XCTAssertTrue(harness.isHalted)
+        XCTAssertEqual(harness.haltCode, .limitExceeded)
+        XCTAssertTrue(harness.hasWorkQueued)
+    }
+
+    func testOneSaveAndOneDeletionRejectedAsTooLargeAreSentSeparately() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(rule: { $0.saves + $0.deletes > 1 ? .fail(.limitExceeded) : nil })
+        harness.startRunning()
+
+        harness.modify("A", saves: 1, deletes: 1, checkpoint: true)
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1, deletes: 1), .modify("A", saves: 1), .modify("A", saves: 0, deletes: 1)])
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1), .modify("A", saved: 0, deleted: 1, checkpointed: true)])
+        XCTAssertFalse(harness.isHalted)
+    }
+
+    // MARK: Observation
+
+    func testEachEventIsAnnouncedOnce() {
+        let harness = makeHarness()
+        harness.startRunning()
+        let before = harness.eventCount(.doWork)
+
+        harness.modify("A")
+        harness.settle()
+
+        XCTAssertEqual(harness.eventCount(.doWork) - before, 1)
+    }
+
+    // MARK: Fetch deduplication
+
+    func testBackToBackIdenticalFetchesAreCollapsed() {
+        let harness = makeHarness()
+        harness.startRunning()
+
+        harness.fetch()
+        harness.fetch()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.fetch])
+    }
+
+    // MARK: Account status
+
+    func testWorkWaitsUntilTheAccountIsAvailable() {
+        let harness = makeHarness()
+        harness.setAccountAvailable(false)
+
+        harness.start()
+        harness.modify("A")
+        harness.settle()
+
+        XCTAssertEqual(harness.calls, [])
+
+        harness.setAccountAvailable(true)
+        harness.settle()
+
+        XCTAssertEqual(harness.calls, [.createZone, .createSubscription, .modify("A", saves: 1)])
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1)])
+    }
+
+    func testAccountBecomingAvailableDoesNotRestartAHaltedSession() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(.fail(.notAuthenticated))
+        harness.startRunning()
+
+        harness.modify("A")
+        harness.settle()
+        harness.setAccountAvailable(true)
+        harness.settle()
+
+        XCTAssertTrue(harness.isHalted)
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1)])
+    }
+
+    func testStartingTwiceSetsUpTheZoneOnce() {
+        let harness = makeHarness()
+
+        harness.start()
+        harness.start()
+        harness.settle()
+
+        XCTAssertEqual(harness.calls, [.createZone, .createSubscription])
+    }
+
+    // MARK: Stopping and resetting
+
+    func testStoppingBeforeQueuedWorkIsSentKeepsItForTheNextStart() {
+        let harness = makeHarness()
+        harness.startRunning()
+        harness.holdWorkDelay()
+
+        harness.modify("A")
+        harness.waitUntilWaiting()
+        harness.stop()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [])
+        XCTAssertTrue(harness.hasWorkQueued)
+
+        harness.releaseWaits()
+        harness.start()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1)])
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1)])
+    }
+
+    func testResettingDuringTheWaitBeforeARetryAbandonsTheRetry() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(.fail(.networkUnavailable))
+        harness.startRunning()
+        harness.holdRetryBackoff()
+
+        harness.modify("A")
+        harness.waitUntilWaiting()
+        harness.reset()
+        harness.settle()
+        harness.releaseWaits()
+
+        XCTAssertFalse(harness.hasWorkQueued)
+
+        harness.setAccountAvailable(true)
+        harness.start()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .createZone, .createSubscription])
+        XCTAssertEqual(harness.completions, [])
+    }
+
+    func testFailureThatArrivesAfterStoppingIsNotRetried() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(.fail(.networkUnavailable))
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.modify("A")
+        harness.waitUntilReplyIsHeld()
+        harness.stop()
+        harness.handler.releaseReplies()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1)])
+        XCTAssertEqual(harness.retryBackoffs, [])
+        XCTAssertTrue(harness.hasWorkQueued)
+
+        harness.start()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .modify("A", saves: 1)])
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1)])
+    }
+
+    func testFailureThatArrivesAfterStoppingAndStartingAgainIsRetriedAfterItsWait() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(.fail(.networkUnavailable))
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.modify("A")
+        harness.modify("B")
+        harness.waitUntilReplyIsHeld()
+        harness.stop()
+        harness.start()
+        harness.handler.releaseReplies()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .modify("A", saves: 1), .modify("B", saves: 1)])
+        XCTAssertEqual(harness.retryBackoffs, [0], "The failure must be handled as a retry, with its wait, not resent at once")
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1), .modify("B", saved: 1)])
+        XCTAssertEqual(harness.handler.maxConcurrentCalls, 1)
+    }
+
+    func testMissingZoneReportedAfterStoppingDoesNotRecreateTheZone() {
+        let harness = makeHarness()
+        harness.handler.scriptFetch(.fail(.zoneNotFound))
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.fetch()
+        harness.waitUntilReplyIsHeld()
+        harness.stop()
+        harness.handler.releaseReplies()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.fetch])
+    }
+
+    func testSuccessThatArrivesAfterStoppingIsStillReported() {
+        let harness = makeHarness()
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.modify("A")
+        harness.waitUntilReplyIsHeld()
+        harness.stop()
+        harness.handler.releaseReplies()
+        harness.settle()
+
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1)])
+        XCTAssertFalse(harness.hasWorkQueued)
+
+        harness.start()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1)], "Work the server already has must not be sent again")
+    }
+
+    func testResultThatArrivesAfterResettingIsDropped() {
+        let harness = makeHarness()
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.modify("A")
+        harness.waitUntilReplyIsHeld()
+        harness.reset()
+        harness.handler.releaseReplies()
+        harness.settle()
+
+        XCTAssertEqual(harness.completions, [])
+        XCTAssertFalse(harness.hasWorkQueued)
+    }
+
+    func testStopAndWaitReturnsOnlyOnceTheOperationUnderWayHasFinished() {
+        let harness = makeHarness()
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.modify("A")
+        harness.waitUntilReplyIsHeld()
+        let hasReturned = harness.beginStopAndWait()
+        harness.idle()
+
+        XCTAssertTrue(harness.isHalted)
+        XCTAssertFalse(hasReturned(), "stopAndWait returned while an operation was still with the handler")
+
+        harness.handler.releaseReplies()
+        harness.waitUntil("stopAndWait has returned") { hasReturned() }
+
+        XCTAssertTrue(harness.handler.isIdle)
+    }
+
+    func testStopAndWaitReturnsStraightAwayWhenNothingIsUnderWay() {
+        let harness = makeHarness()
+        harness.startRunning()
+
+        let hasReturned = harness.beginStopAndWait()
+
+        harness.waitUntil("stopAndWait has returned") { hasReturned() }
+        XCTAssertTrue(harness.isHalted)
+    }
+
+    func testRestartingWhileAnOperationIsUnderWayDoesNotSendASecondOne() {
+        let harness = makeHarness()
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.modify("A")
+        harness.modify("B")
+        harness.waitUntilReplyIsHeld()
+        harness.stop()
+        harness.start()
+        harness.idle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1)])
+
+        harness.handler.releaseReplies()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .modify("B", saves: 1)])
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1), .modify("B", saved: 1)])
+        XCTAssertEqual(harness.handler.maxConcurrentCalls, 1)
+    }
+
+    // MARK: Lifetime
+
+    func testSessionIsReleasedWhenDropped() {
+        XCTAssertTrue(SessionHarness.sessionIsReleasedWhenDropped())
+    }
+
+    func testSessionIsReleasedAfterWorking() {
+        XCTAssertTrue(SessionHarness.sessionIsReleasedAfterWorking())
+    }
 }

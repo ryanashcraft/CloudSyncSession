@@ -12,16 +12,16 @@ import XCTest
 /// - the session does not halt.
 final class SessionQueueInvariantTests: XCTestCase {
     func testInvariantsHoldWithoutFaults() {
-        for seed: UInt64 in [1, 2] {
+        for seed: UInt64 in 1 ... 20 {
             runScenario(seed: seed, operationCount: 15, withFaults: false)
         }
     }
 
-    /// With transient failures and oversized operations in the mix, the ordering invariant breaks:
-    /// see the ordering tests in `SessionKnownDefectTests`.
+    /// The same, with operations that fail once before succeeding and operations too large for
+    /// one request in the mix.
     func testInvariantsHoldWithTransientFailuresAndOversizedOperations() {
-        XCTExpectFailure("Retried and split modifies lose their place in the queue", strict: true) {
-            runScenario(seed: 3, operationCount: 15, withFaults: true)
+        for seed: UInt64 in 1 ... 100 {
+            runScenario(seed: seed, operationCount: 15, withFaults: true)
         }
     }
 

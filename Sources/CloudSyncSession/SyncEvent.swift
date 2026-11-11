@@ -1,10 +1,12 @@
 import CloudKit
 
+/// Something the session did or was asked to do, published once on `eventsPublisher` for
+/// diagnostics. Events describe what happened; they do not drive the session.
 public enum SyncEvent {
-    /// Should be dispatched when the session starts.
+    /// Indicates the session was started.
     case start
 
-    /// Indicates a non-recoverable er  ror has occured and we should halt.
+    /// Indicates a non-recoverable error has occured, or the session was stopped, and work has halted.
     case halt(Error)
 
     /// Indicates the iCloud account status changed.
@@ -13,7 +15,7 @@ public enum SyncEvent {
     /// Queues up work.
     case doWork(SyncWork)
 
-    /// Queues up work that has failed and will be retried.
+    /// Indicates that failed work is being tried again, in the same place in the queue.
     case retryWork(SyncWork)
 
     /// Indicates that work has failed.
@@ -22,18 +24,15 @@ public enum SyncEvent {
     /// Indicates that work has succeeded.
     case workSuccess(SyncWork, SyncWork.Result)
 
-    /// Queues up modification work after the work had previously failed due to a conflict.
+    /// Indicates that modification work failed due to a conflict and is being sent again in the same place in the queue.
     /// Includes failed work, records to save including resolved records, and record IDs that should be deleted.
     case resolveConflict(SyncWork, [CKRecord], [CKRecord.ID])
 
-    /// Indicates that work should be retried after some time.
+    /// Indicates that work failed and should be retried after some time. Includes the wait the server suggested, if any.
     case retry(SyncWork, Error, TimeInterval?)
 
-    /// Indicates that work should be split up.
+    /// Indicates that the server rejected work as too large and it is being split up.
     case split(SyncWork, Error)
-
-    /// Does nothing.
-    case noop
 
     var logDescription: String {
         switch self {
@@ -57,8 +56,6 @@ public enum SyncEvent {
             return "Split work: \(work.debugDescription)"
         case let .resolveConflict(_, records, recordIDsToDelete):
             return "Resolving \(records.count) records with \(recordIDsToDelete.count) deleted"
-        case .noop:
-            return "Noop"
         }
     }
 }

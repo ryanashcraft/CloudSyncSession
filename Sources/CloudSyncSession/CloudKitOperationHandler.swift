@@ -135,7 +135,7 @@ public class CloudKitOperationHandler: OperationHandler {
         // Deliberately the deprecated block: modifyRecordsResultBlock reports .success even
         // when every record in the batch failed (per-record errors never roll up on the
         // iOS 15+ API — https://developer.apple.com/forums/thread/708758), which starves
-        // ErrorMiddleware of the partialFailure it needs for conflict resolution and retry.
+        // FailureResolver of the partialFailure it needs for conflict resolution and retry.
         operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
             if let error = error {
                 Log.operations.error("Failed to modify records: \(error)")
