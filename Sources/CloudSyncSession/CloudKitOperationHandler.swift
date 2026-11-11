@@ -35,7 +35,7 @@ public class CloudKitOperationHandler: OperationHandler {
     let savePolicy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged
     let qos: QualityOfService = .userInitiated
     /// Guards rateLimitController, throttleDuration, and nextOperationDeadline,
-    /// which are mutated from CloudKit callback threads and read when queueing.
+    /// which are mutated from CloudKit callback threads and read when sending.
     private let throttleLock = NSLock()
 
     private var rateLimitController = RateLimitPIDController(
@@ -76,13 +76,48 @@ public class CloudKitOperationHandler: OperationHandler {
         throttleDuration = rateLimitController.rateLimit
     }
 
-    private func queueOperation(_ operation: Operation) {
-        throttleLock.lock()
-        let deadline: DispatchTime = nextOperationDeadline ?? DispatchTime.now()
-        throttleLock.unlock()
+    /// Sends one CloudKit operation, once the throttle allows, and waits for the result its
+    /// completion handler reports.
+    ///
+    /// `makeOperation` builds the operation and wires the completion handler it is given into the
+    /// operation's own callbacks.
+    ///
+    /// If the task is cancelled while the operation is still waiting out the throttle, the
+    /// operation is never sent and this throws at once.
+    ///
+    /// If it is cancelled after the operation has been handed to CloudKit, the operation is left
+    /// to finish and its real result is returned. Cancelling a `CKOperation` at that point does
+    /// not recall the request: run against CloudKit, a modify cancelled 150 ms after it was sent
+    /// was reported as cancelled at once while every one of its records was saved. Cancelling
+    /// would only mean returning before the server was done and without knowing what it did,
+    /// and callers of the session's `stopAndWait()` rely on neither being the case.
+    private func send<Value>(
+        _ makeOperation: (@escaping (Result<Value, Error>) -> Void) -> Operation
+    ) async throws -> Value {
+        try Task.checkCancellation()
 
-        DispatchQueue.main.asyncAfter(deadline: deadline) {
-            self.operationQueue.addOperation(operation)
+        let sending = SendingOperation<Value>(queue: operationQueue)
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard sending.begin(continuation) else {
+                    return
+                }
+
+                let operation = makeOperation { result in
+                    sending.finish(with: result)
+                }
+
+                throttleLock.lock()
+                let deadline: DispatchTime = nextOperationDeadline ?? DispatchTime.now()
+                throttleLock.unlock()
+
+                DispatchQueue.main.asyncAfter(deadline: deadline) {
+                    sending.enqueue(operation)
+                }
+            }
+        } onCancel: {
+            sending.cancel()
         }
     }
 
@@ -114,18 +149,138 @@ public class CloudKitOperationHandler: OperationHandler {
         }
     }
 
-    public func handle(
-        modifyOperation: ModifyOperation,
+    public func handle(modifyOperation: ModifyOperation) async throws -> ModifyOperation.Response {
+        guard !modifyOperation.recordIDsToDelete.isEmpty || !modifyOperation.records.isEmpty else {
+            return ModifyOperation.Response(savedRecords: [], deletedRecordIDs: [])
+        }
+
+        return try await send { completion in
+            self.makeModifyRecordsOperation(modifyOperation, completion: completion)
+        }
+    }
+
+    public func handle(fetchOperation: FetchOperation) async throws -> FetchOperation.Response {
+        try await send { completion in
+            self.makeFetchRecordZoneChangesOperation(fetchOperation, completion: completion)
+        }
+    }
+
+    public func handle(createZoneOperation: CreateZoneOperation) async throws -> Bool {
+        do {
+            let isZoneAlreadyCreated = try await send { completion in
+                self.makeCheckCustomZoneOperation(zoneID: createZoneOperation.zoneID, completion: completion)
+            }
+
+            if isZoneAlreadyCreated {
+                return true
+            }
+        } catch let error as CKError where Self.meansMissing(error) {
+            // The zone is not there. Go on to create it.
+        }
+
+        // Stopping between the check and the creation must not go on to create the zone.
+        try Task.checkCancellation()
+
+        return try await send { completion in
+            self.makeCreateCustomZoneOperation(zoneID: self.zoneID, completion: completion)
+        }
+    }
+
+    public func handle(createSubscriptionOperation _: CreateSubscriptionOperation) async throws -> Bool {
+        do {
+            let isSubscriptionAlreadyCreated = try await send { completion in
+                self.makeCheckSubscriptionOperation(completion: completion)
+            }
+
+            if isSubscriptionAlreadyCreated {
+                return true
+            }
+        } catch let error as CKError where Self.meansMissing(error) {
+            // The subscription is not there. Go on to create it.
+        }
+
+        try Task.checkCancellation()
+
+        return try await send { completion in
+            self.makeCreateSubscriptionOperation(zoneID: self.zoneID, subscriptionID: self.subscriptionID, completion: completion)
+        }
+    }
+
+    /// Whether a failed check for the zone or the subscription means it does not exist, as
+    /// opposed to the check itself not having worked.
+    private static func meansMissing(_ error: CKError) -> Bool {
+        switch error.code {
+        case .partialFailure,
+             .zoneNotFound,
+             .userDeletedZone:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+struct FetchOperationResponseBuilder {
+    private var changeToken: CKServerChangeToken?
+    private var changedRecords: [CKRecord] = []
+    private var deletedRecordIDs: [CKRecord.ID] = []
+    private var hasMore = false
+    private var fetchError: Error?
+
+    init(changeToken: CKServerChangeToken?) {
+        self.changeToken = changeToken
+    }
+
+    mutating func updateChangeToken(_ changeToken: CKServerChangeToken) {
+        self.changeToken = changeToken
+    }
+
+    mutating func recordChanged(_ record: CKRecord) {
+        changedRecords.append(record)
+    }
+
+    mutating func recordDeleted(_ recordID: CKRecord.ID) {
+        deletedRecordIDs.append(recordID)
+    }
+
+    mutating func recordZoneFetchSucceeded(changeToken: CKServerChangeToken, hasMore: Bool) {
+        self.changeToken = changeToken
+        self.hasMore = hasMore
+    }
+
+    mutating func recordZoneFetchFailed(_ error: Error) {
+        fetchError = fetchError ?? error
+    }
+
+    mutating func recordFetchFailed(_ error: Error) {
+        fetchError = fetchError ?? error
+    }
+
+    func response() -> Result<FetchOperation.Response, Error> {
+        if let fetchError {
+            return .failure(fetchError)
+        }
+
+        return .success(
+            FetchOperation.Response(
+                changeToken: changeToken,
+                changedRecords: changedRecords,
+                deletedRecordIDs: deletedRecordIDs,
+                hasMore: hasMore
+            )
+        )
+    }
+}
+
+// MARK: Building the CloudKit operations
+
+private extension CloudKitOperationHandler {
+    func makeModifyRecordsOperation(
+        _ modifyOperation: ModifyOperation,
         completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void
-    ) {
+    ) -> Operation {
         let recordsToSave = modifyOperation.records
         let recordIDsToDelete = modifyOperation.recordIDsToDelete
-
-        guard !recordIDsToDelete.isEmpty || !recordsToSave.isEmpty else {
-            completion(.success(ModifyOperation.Response(savedRecords: [], deletedRecordIDs: [])))
-
-            return
-        }
 
         let operation = CKModifyRecordsOperation(
             recordsToSave: recordsToSave,
@@ -153,10 +308,13 @@ public class CloudKitOperationHandler: OperationHandler {
         operation.qualityOfService = qos
         operation.database = database
 
-        queueOperation(operation)
+        return operation
     }
 
-    public func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
+    func makeFetchRecordZoneChangesOperation(
+        _ fetchOperation: FetchOperation,
+        completion: @escaping (Result<FetchOperation.Response, Error>) -> Void
+    ) -> Operation {
         var responseBuilder = FetchOperationResponseBuilder(changeToken: fetchOperation.changeToken)
 
         let operation = CKFetchRecordZoneChangesOperation()
@@ -237,124 +395,10 @@ public class CloudKitOperationHandler: OperationHandler {
         operation.qualityOfService = qos
         operation.database = database
 
-        queueOperation(operation)
+        return operation
     }
 
-    public func handle(createZoneOperation: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
-        checkCustomZone(zoneID: createZoneOperation.zoneID) { result in
-            switch result {
-            case let .failure(error):
-                if let ckError = error as? CKError {
-                    switch ckError.code {
-                    case .partialFailure,
-                         .zoneNotFound,
-                         .userDeletedZone:
-                        self.createCustomZone(zoneID: self.zoneID, completion: completion)
-
-                        return
-                    default:
-                        break
-                    }
-                }
-
-                completion(.failure(error))
-            case let .success(isZoneAlreadyCreated):
-                if isZoneAlreadyCreated {
-                    completion(.success(true))
-
-                    return
-                }
-
-                self.createCustomZone(zoneID: self.zoneID, completion: completion)
-            }
-        }
-    }
-
-    public func handle(createSubscriptionOperation _: CreateSubscriptionOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
-        checkSubscription(zoneID: zoneID) { result in
-            switch result {
-            case let .failure(error):
-                if let ckError = error as? CKError {
-                    switch ckError.code {
-                    case .partialFailure,
-                         .zoneNotFound,
-                         .userDeletedZone:
-                        self.createSubscription(zoneID: self.zoneID, subscriptionID: self.subscriptionID, completion: completion)
-
-                        return
-                    default:
-                        break
-                    }
-                }
-
-                completion(.failure(error))
-            case let .success(isSubscriptionAlreadyCreated):
-                if isSubscriptionAlreadyCreated {
-                    completion(.success(true))
-
-                    return
-                }
-
-                self.createSubscription(zoneID: self.zoneID, subscriptionID: self.subscriptionID, completion: completion)
-            }
-        }
-    }
-}
-
-struct FetchOperationResponseBuilder {
-    private var changeToken: CKServerChangeToken?
-    private var changedRecords: [CKRecord] = []
-    private var deletedRecordIDs: [CKRecord.ID] = []
-    private var hasMore = false
-    private var fetchError: Error?
-
-    init(changeToken: CKServerChangeToken?) {
-        self.changeToken = changeToken
-    }
-
-    mutating func updateChangeToken(_ changeToken: CKServerChangeToken) {
-        self.changeToken = changeToken
-    }
-
-    mutating func recordChanged(_ record: CKRecord) {
-        changedRecords.append(record)
-    }
-
-    mutating func recordDeleted(_ recordID: CKRecord.ID) {
-        deletedRecordIDs.append(recordID)
-    }
-
-    mutating func recordZoneFetchSucceeded(changeToken: CKServerChangeToken, hasMore: Bool) {
-        self.changeToken = changeToken
-        self.hasMore = hasMore
-    }
-
-    mutating func recordZoneFetchFailed(_ error: Error) {
-        fetchError = fetchError ?? error
-    }
-
-    mutating func recordFetchFailed(_ error: Error) {
-        fetchError = fetchError ?? error
-    }
-
-    func response() -> Result<FetchOperation.Response, Error> {
-        if let fetchError {
-            return .failure(fetchError)
-        }
-
-        return .success(
-            FetchOperation.Response(
-                changeToken: changeToken,
-                changedRecords: changedRecords,
-                deletedRecordIDs: deletedRecordIDs,
-                hasMore: hasMore
-            )
-        )
-    }
-}
-
-private extension CloudKitOperationHandler {
-    func checkCustomZone(zoneID: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
+    func makeCheckCustomZoneOperation(zoneID: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) -> Operation {
         let operation = CKFetchRecordZonesOperation(recordZoneIDs: [zoneID])
 
         var foundZone = false
@@ -395,10 +439,10 @@ private extension CloudKitOperationHandler {
         operation.qualityOfService = .userInitiated
         operation.database = database
 
-        queueOperation(operation)
+        return operation
     }
 
-    func createCustomZone(zoneID: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
+    func makeCreateCustomZoneOperation(zoneID: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) -> Operation {
         let zone = CKRecordZone(zoneID: zoneID)
         let operation = CKModifyRecordZonesOperation(
             recordZonesToSave: [zone],
@@ -421,10 +465,10 @@ private extension CloudKitOperationHandler {
         operation.qualityOfService = .userInitiated
         operation.database = database
 
-        queueOperation(operation)
+        return operation
     }
 
-    func checkSubscription(zoneID _: CKRecordZone.ID, completion: @escaping (Result<Bool, Error>) -> Void) {
+    func makeCheckSubscriptionOperation(completion: @escaping (Result<Bool, Error>) -> Void) -> Operation {
         let operation = CKFetchSubscriptionsOperation(subscriptionIDs: [subscriptionID])
 
         var foundSubscription = false
@@ -468,10 +512,10 @@ private extension CloudKitOperationHandler {
         operation.qualityOfService = .userInitiated
         operation.database = database
 
-        queueOperation(operation)
+        return operation
     }
 
-    func createSubscription(zoneID: CKRecordZone.ID, subscriptionID: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+    func makeCreateSubscriptionOperation(zoneID: CKRecordZone.ID, subscriptionID: String, completion: @escaping (Result<Bool, Error>) -> Void) -> Operation {
         let subscription = CKRecordZoneSubscription(
             zoneID: zoneID,
             subscriptionID: subscriptionID
@@ -503,7 +547,7 @@ private extension CloudKitOperationHandler {
         operation.qualityOfService = .userInitiated
         operation.database = database
 
-        queueOperation(operation)
+        return operation
     }
 }
 
@@ -521,5 +565,78 @@ struct SubscriptionExistenceResult {
         }
 
         return .success(foundSubscription)
+    }
+}
+
+/// One CloudKit operation on its way through the throttle and the operation queue, and the
+/// continuation waiting for its result.
+///
+/// It makes sure the continuation is resumed exactly once: with CloudKit's result, or with a
+/// cancellation that arrived before the operation was sent.
+private final class SendingOperation<Value>: @unchecked Sendable {
+    private let queue: OperationQueue
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var operation: Operation?
+    private var isCancelled = false
+
+    init(queue: OperationQueue) {
+        self.queue = queue
+    }
+
+    /// Takes the continuation to resume. Returns false, having resumed it, if cancellation got
+    /// here first.
+    func begin(_ continuation: CheckedContinuation<Value, Error>) -> Bool {
+        lock.lock()
+
+        if isCancelled {
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+
+            return false
+        }
+
+        self.continuation = continuation
+        lock.unlock()
+
+        return true
+    }
+
+    /// Hands the operation to the queue once the throttle has let it through, unless it was
+    /// cancelled while waiting.
+    func enqueue(_ operation: Operation) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !isCancelled else {
+            return
+        }
+
+        // Recorded under the same lock as the check in `cancel()`, so a cancellation finds the
+        // operation either not sent, and stops it here, or sent, and leaves it alone.
+        self.operation = operation
+        queue.addOperation(operation)
+    }
+
+    func finish(with result: Result<Value, Error>) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+
+        continuation?.resume(with: result)
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        let isWithCloudKit = operation != nil
+        lock.unlock()
+
+        // Sent already: left to finish, and its completion handler resumes the continuation.
+        // Still waiting out the throttle: it will never be sent, so there is nothing to wait for.
+        if !isWithCloudKit {
+            finish(with: .failure(CancellationError()))
+        }
     }
 }

@@ -172,7 +172,7 @@ cloudSyncSession.eventsPublisher
 8. Stop the session before destructive work.
 
 ```swift
-// Returns once the operation that was in progress, if any, has finished,
+// Cancels the operation in progress, if any, and returns once it has wound down,
 // so nothing sent earlier can land after what you do next
 await cloudSyncSession.stopAndWait()
 cloudSyncSession.reset()
@@ -213,13 +213,15 @@ The decisions are made by small pieces that do not touch the session, each of wh
 
 `eventsPublisher` announces each step (`doWork`, `workSuccess`, `workFailure`, `retry`, `halt`, and so on) once, for diagnostics. Events describe what happened; they do not drive the session.
 
-`stop()` halts the session: no further work is sent, and a wait before work or before a retry ends at once. An operation that is already with the operation handler runs to its end. If it succeeds, that is still reported; if it fails while the session is still stopped, the failure is not acted on and the work is sent again on the next `start()`. `stopAndWait()` does the same and returns only when that operation has finished. `reset()` discards the queues and ignores the result of an operation in progress.
+`stop()` halts the session: no further work is sent, a wait before work or before a retry ends at once, and an operation that is with the operation handler is cancelled. `CloudKitOperationHandler` drops a cancelled request it has not sent yet and lets one that is already with CloudKit finish, because CloudKit cannot recall a request once it is sent. If the operation succeeds, that is reported. Otherwise its work stays queued for the next `start()`. `stopAndWait()` does the same and returns only when the cancelled operation has wound down, after which nothing the session sent can still reach the server. `reset()` cancels in the same way, discards the queues, and ignores the result of the operation that was in progress.
 
 ## Tests
 
 In an effort to make as much of the logic and behavior testable, most CloudKit-specific code is decoupled and/or mockable via protocols.
 
-`OperationHandler` is a protocol that abstracts the handling all of the various operations: `FetchOperation`, `ModifyOperation`, `CreateZoneOperation`, and `CreateSubscriptionOperation`. The main implementation of this protocol, `CloudKitOperationHandler`, handles these operations using the standard CloudKit APIs.
+`OperationHandler` is a protocol that abstracts the handling all of the various operations: `FetchOperation`, `ModifyOperation`, `CreateZoneOperation`, and `CreateSubscriptionOperation`. The main implementation of this protocol, `CloudKitOperationHandler`, handles these operations using the standard CloudKit APIs. Each of its methods is `async` and is cancelled when the session is stopped or reset.
+
+`LiveTests` holds a separate set of tests that run against a real CloudKit container, for what the scripted handler cannot show. They are not part of `swift test`; see `LiveTests/README.md`.
 
 Two suites describe the session purely from the outside, through `SessionHarness` and a `ScriptedOperationHandler` in `Tests/CloudSyncSessionTests/Support`. A test scripts how the handler replies, submits work, and asserts on the requests the handler received and the completions the session reported. These test files do not import the library, so they do not depend on how the session is built. The harness replaces the session's waits with ones that end at once, so retries and backoff are tested without waiting in real time, and it can hold a wait or a reply open to test what happens when the session is stopped or reset partway through.
 
