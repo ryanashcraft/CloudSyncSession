@@ -22,10 +22,6 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(
-            url: "https://github.com/ryanashcraft/swift-pid.git",
-            .upToNextMajor(from: "0.0.1")
-        ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.4"),
     ],
     targets: [
@@ -43,7 +39,6 @@ let package = Package(
             name: "CloudSyncSession",
             dependencies: [
                 "SyncSessionCore",
-                .product(name: "PID", package: "swift-pid"),
                 .product(name: "Logging", package: "swift-log"),
             ],
             swiftSettings: [
