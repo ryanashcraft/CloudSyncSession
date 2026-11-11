@@ -22,32 +22,25 @@
 //
 
 import CloudKit
-import PID
 import SyncSessionCore
 
 /// An object that handles all of the key operations (fetch, modify, create zone, and create subscription) using the standard CloudKit APIs.
 public class CloudKitOperationHandler: OperationHandler {
-    static let minThrottleDuration: TimeInterval = 0.25
-    static let maxThrottleDuration: TimeInterval = 60 * 10
-
     let database: CKDatabase
     let zoneID: CKRecordZone.ID
     let subscriptionID: String
     let savePolicy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged
     let qos: QualityOfService = .userInitiated
-    /// Guards rateLimitController, throttleDuration, and nextOperationDeadline,
-    /// which are mutated from CloudKit callback threads and read when sending.
+    /// Guards throttle and nextOperationDeadline, which are mutated from CloudKit callback
+    /// threads and read when sending.
     private let throttleLock = NSLock()
 
-    private var rateLimitController = RateLimitPIDController(
-        kp: 2,
-        ki: 0.05,
-        kd: 0.02,
-        errorWindowSize: 20,
-        targetSuccessRate: 0.96,
-        initialRateLimit: 1,
-        outcomeWindowSize: 1
-    )
+    /// The gap to leave between one fetch or modify finishing and the next request being sent.
+    private var throttle = Throttle()
+
+    /// When the next request may be sent. Nil until a fetch or modify has finished, so the
+    /// first request is sent at once.
+    private var nextOperationDeadline: DispatchTime?
 
     private let operationQueue: OperationQueue = {
         let queue = OperationQueue()
@@ -56,25 +49,10 @@ public class CloudKitOperationHandler: OperationHandler {
         return queue
     }()
 
-    private var throttleDuration: TimeInterval {
-        didSet {
-            nextOperationDeadline = DispatchTime.now() + throttleDuration
-
-            if throttleDuration > oldValue {
-                Log.operations.info("Increasing throttle duration from \(String(format: "%.2f", oldValue))s to \(String(format: "%.2f", throttleDuration))s")
-            } else if throttleDuration < oldValue {
-                Log.operations.info("Decreasing throttle duration from \(String(format: "%.2f", oldValue))s to \(String(format: "%.2f", throttleDuration))s")
-            }
-        }
-    }
-
-    private var nextOperationDeadline: DispatchTime?
-
     public init(database: CKDatabase, zoneID: CKRecordZone.ID, subscriptionID: String) {
         self.database = database
         self.zoneID = zoneID
         self.subscriptionID = subscriptionID
-        throttleDuration = rateLimitController.rateLimit
     }
 
     /// Sends one CloudKit operation, once the throttle allows, and waits for the result its
@@ -122,31 +100,49 @@ public class CloudKitOperationHandler: OperationHandler {
         }
     }
 
-    private func onOperationSuccess() {
-        throttleLock.lock()
-        defer { throttleLock.unlock() }
+    /// What the way a request ended says about the load the server is under.
+    ///
+    /// - Parameter error: The error the request failed with, or nil if it succeeded.
+    /// - Returns: Nil for an error that did not come from CloudKit, which says nothing about
+    ///   the server either way.
+    static func throttleSignal(forRequestEndingWith error: Error?) -> Throttle.Signal? {
+        guard let error else {
+            return .noPressure
+        }
 
-        rateLimitController.record(outcome: .success)
-        throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
+        guard let ckError = error as? CKError else {
+            return nil
+        }
+
+        if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
+            return .waitRequested(suggestedBackoffSeconds)
+        }
+
+        return ckError.indicatesShouldBackoff ? .pressure : .noPressure
     }
 
-    private func onOperationError(_ error: Error) {
-        guard let ckError = error as? CKError else {
+    /// Tells the throttle how a request ended and holds the next request back for the gap it
+    /// gives, counted from now.
+    private func requestEnded(with error: Error?) {
+        guard let signal = Self.throttleSignal(forRequestEndingWith: error) else {
             return
         }
 
         throttleLock.lock()
-        defer { throttleLock.unlock() }
+        let previousDuration = throttle.duration
+        throttle.record(signal)
+        let duration = throttle.duration
+        nextOperationDeadline = DispatchTime.now() + duration
+        throttleLock.unlock()
 
-        rateLimitController.record(outcome: ckError.indicatesShouldBackoff ? .failure : .success)
+        if case let .waitRequested(seconds) = signal {
+            Log.operations.info("CloudKit error suggests retrying after \(seconds) seconds")
+        }
 
-        if let suggestedBackoffSeconds = ckError.suggestedBackoffSeconds {
-            Log.operations.info("CloudKit error suggests retrying after \(suggestedBackoffSeconds) seconds")
-
-            // Respect the amount suggested for the next operation
-            throttleDuration = suggestedBackoffSeconds
-        } else {
-            throttleDuration = min(Self.maxThrottleDuration, max(Self.minThrottleDuration, rateLimitController.rateLimit))
+        if duration > previousDuration {
+            Log.operations.info("Increasing throttle duration from \(String(format: "%.2f", previousDuration))s to \(String(format: "%.2f", duration))s")
+        } else if duration < previousDuration {
+            Log.operations.info("Decreasing throttle duration from \(String(format: "%.2f", previousDuration))s to \(String(format: "%.2f", duration))s")
         }
     }
 
@@ -295,11 +291,11 @@ private extension CloudKitOperationHandler {
         operation.modifyRecordsCompletionBlock = { serverRecords, deletedRecordIDs, error in
             if let error = error {
                 Log.operations.error("Failed to modify records: \(error)")
-                self.onOperationError(error)
+                self.requestEnded(with: error)
 
                 completion(.failure(error))
             } else {
-                self.onOperationSuccess()
+                self.requestEnded(with: nil)
 
                 completion(.success(ModifyOperation.Response(savedRecords: serverRecords ?? [], deletedRecordIDs: deletedRecordIDs ?? [])))
             }
@@ -374,20 +370,20 @@ private extension CloudKitOperationHandler {
                 case let .success(response):
                     Log.operations.info("Finished fetching record zone changes")
 
-                    self.onOperationSuccess()
+                    self.requestEnded(with: nil)
 
                     completion(.success(response))
                 case let .failure(error):
                     Log.operations.error("Failed to fetch record zone changes: \(error)")
 
-                    self.onOperationError(error)
+                    self.requestEnded(with: error)
 
                     completion(.failure(error))
                 }
             case let .failure(error):
                 Log.operations.error("Failed to fetch record zone changes: \(error)")
 
-                self.onOperationError(error)
+                self.requestEnded(with: error)
 
                 completion(.failure(error))
             }

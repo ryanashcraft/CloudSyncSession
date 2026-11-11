@@ -216,6 +216,9 @@ The decisions are made by small pieces that do not touch the session, each of wh
 - `RetryPolicy`: how long to wait before a retry, and when to give up.
 - `ModifyOperation.split` and `splitInHalf`: how a modify is divided.
 - `Pacing`: how the session waits. The real one sleeps; tests substitute one that does not.
+- `Throttle`: how long an operation handler leaves between one request to the server and the next. The gap starts at a quarter of a second. It doubles when the server reports load, becomes the server's own number when the server asks for a wait, and shrinks by a third after each request that shows no load. It is never less than a quarter of a second or more than ten minutes.
+
+`CloudKitOperationHandler` spaces its requests with a `Throttle`. After each fetch or modify it tells the throttle whether CloudKit reported load, and it holds the next request back until that gap has passed since the last one finished. The first request is sent at once. The session's own wait before a retry runs over the same stretch of time, so the two do not add up.
 
 `eventsPublisher` announces each step (`doWork`, `workSuccess`, `workFailure`, `retry`, `halt`, and so on) once, for diagnostics. Events describe what happened; they do not drive the session.
 
