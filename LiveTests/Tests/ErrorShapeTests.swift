@@ -59,14 +59,11 @@ final class ErrorShapeTests: XCTestCase {
     func testFetchFromADeletedZone() async throws {
         await LiveCloudKit.deleteZone(zoneID)
 
-        let result: Result<FetchOperation.Response, Error> = await withCheckedContinuation { continuation in
-            handler.handle(fetchOperation: FetchOperation(changeToken: nil)) { continuation.resume(returning: $0) }
-        }
+        do {
+            _ = try await handler.handle(fetchOperation: FetchOperation(changeToken: nil))
 
-        switch result {
-        case .success:
             XCTFail("A fetch from a deleted zone was reported as a success")
-        case let .failure(error):
+        } catch {
             noteObservation("fetch from a deleted zone: \(describe(error))")
         }
     }
@@ -74,8 +71,10 @@ final class ErrorShapeTests: XCTestCase {
     private func modify(saving records: [CKRecord]) async -> Result<ModifyOperation.Response, Error> {
         let operation = ModifyOperation(records: records, recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
 
-        return await withCheckedContinuation { continuation in
-            handler.handle(modifyOperation: operation) { continuation.resume(returning: $0) }
+        do {
+            return .success(try await handler.handle(modifyOperation: operation))
+        } catch {
+            return .failure(error)
         }
     }
 }

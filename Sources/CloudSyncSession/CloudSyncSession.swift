@@ -59,13 +59,14 @@ public class CloudSyncSession: @unchecked Sendable {
     let failureResolver: FailureResolver
     let pacing: Pacing
 
-    /// Guards `lockedState`, `runLoopTask`, `currentPause`, and `isLookingUpAccountStatus`.
+    /// Guards `lockedState`, `runLoopTask`, `cancelCurrentStep`, and `isLookingUpAccountStatus`.
     let lock = NSLock()
     var lockedState = SyncState()
     var runLoopTask: Task<Void, Never>?
 
-    /// The wait the run loop is in, if it is in one. Cancelling it ends the wait at once.
-    var currentPause: Task<Void, Error>?
+    /// Cancels what the run loop is waiting on right now: a wait of its own, or an operation that
+    /// is with the operation handler. Nil when it is waiting on neither.
+    var cancelCurrentStep: (@Sendable () -> Void)?
     private var isLookingUpAccountStatus = false
 
     private let stateSubject = CurrentValueSubject<SyncState, Never>(SyncState())
@@ -164,37 +165,37 @@ public class CloudSyncSession: @unchecked Sendable {
     /// Stop/halt the session.
     ///
     /// The session stops sending work, and a wait before work or before a retry ends at once. Queued
-    /// work is kept for the next `start()`. An operation that is with the operation handler, or is
-    /// being handed to it as this is called, runs to its end. If it succeeds, that is still
-    /// reported. If it fails while the session is still stopped, the failure is not acted on.
+    /// work is kept for the next `start()`. An operation that is with the operation handler is
+    /// cancelled. What that does is up to the handler: `CloudKitOperationHandler` drops a request it
+    /// has not sent yet and lets one that is already with CloudKit finish, because CloudKit cannot
+    /// recall it. If the operation succeeds, that is reported. Otherwise its work stays queued.
     ///
-    /// This returns immediately. Use `stopAndWait()` when what comes next must not overlap with
-    /// that operation.
+    /// This returns immediately, before that operation has wound down. Use `stopAndWait()` when
+    /// what comes next must not overlap with it.
     public func stop() {
         _ = halt()
     }
 
     /// Stops the session as `stop()` does, then waits until the operation that was with the operation
-    /// handler, if there was one, has finished.
+    /// handler, if there was one, has finished or been cancelled.
     ///
     /// Use this before anything destructive, such as deleting the zone. After it returns, nothing
     /// this session sent before the call can still reach the server.
     ///
-    /// The wait lasts as long as the operation handler takes to finish that one operation. With
-    /// `CloudKitOperationHandler` that includes the time it holds an operation back after CloudKit
-    /// has asked it to slow down, which can be minutes. That handler starts its operations from
-    /// the main queue, so do not block the main thread while waiting for this to return.
+    /// The wait lasts as long as the operation handler takes to wind down the one cancelled
+    /// operation. With `CloudKitOperationHandler` that is no time for a request it had not sent
+    /// yet, and the rest of the round trip for one that is already with CloudKit.
     ///
     /// If `start()` is called before this returns, it returns once the session next runs out of work.
     public func stopAndWait() async {
         await halt()?.value
     }
 
-    /// Reset the session state. Queued work is discarded, and the result of an operation that is
-    /// already with the operation handler is ignored when it arrives.
+    /// Reset the session state. Queued work is discarded. An operation that is with the operation
+    /// handler is cancelled, and its result is ignored if one still arrives.
     public func reset() {
         update { change in
-            currentPause?.cancel()
+            cancelCurrentStep?()
             change.state = SyncState()
         }
     }
@@ -281,7 +282,7 @@ public class CloudSyncSession: @unchecked Sendable {
             change.emit(.halt(StopError()))
             change.state.isHalted = true
 
-            currentPause?.cancel()
+            cancelCurrentStep?()
 
             return runLoopTask
         }

@@ -7,10 +7,11 @@ import CloudKit
 /// retried, resent after conflict resolution, or split is replaced where it stands, so it keeps its
 /// place ahead of everything queued after it.
 ///
-/// The loop is a task that exists only while there is work the session is allowed to do. It is
-/// never interrupted while an operation is with the handler, so a second operation cannot be sent
-/// alongside the first. `stop()` and `reset()` change the state and end whatever wait the loop is
-/// in; the loop then acts on the state it finds, which is how it comes to send nothing more.
+/// The loop is a task that exists only while there is work the session is allowed to do. It waits
+/// on one thing at a time: a pause of its own, or an operation that is with the handler. `stop()`
+/// and `reset()` change the state and cancel that one thing. The loop is not itself cancelled: it
+/// waits for the cancelled operation to wind down, so a second operation cannot be sent alongside
+/// it, and then acts on the state it finds, which is how it comes to send nothing more.
 extension CloudSyncSession {
     /// Starts the run loop unless it is already running or there is nothing to do. Call with the lock held.
     func startRunLoopIfNeeded() {
@@ -25,12 +26,13 @@ extension CloudSyncSession {
 
     private func runLoop() async {
         while let work = state.currentWork {
-            // If the wait is cut short, or the queue changed during it, look at the queue afresh.
-            guard await pause(.beforeWork, whileNextIs: work), state.currentWork?.id == work.id else {
+            // If the wait is cut short, the queue changed during it, or the operation was
+            // cancelled, look at the queue afresh.
+            guard await pause(.beforeWork, whileNextIs: work), let result = await send(work) else {
                 continue
             }
 
-            switch await operationHandler.perform(work) {
+            switch result {
             case let .success(result):
                 complete(work, with: result)
             case let .failure(error):
@@ -56,13 +58,19 @@ extension CloudSyncSession {
     /// Waits, as long as `work` is what the session should do next. Returns false without waiting
     /// if it is not, and false as soon as `stop()` or `reset()` cuts the wait short.
     private func pause(_ pause: Pause, whileNextIs work: SyncWork) async -> Bool {
-        guard let waiting = beginPause(pause, whileNextIs: work) else {
+        let waiting: Task<Void, Error>? = beginStep(whileNextIs: work) { [pacing] in
+            Task(priority: .userInitiated) {
+                try await pacing.pause(pause)
+            }
+        }
+
+        guard let waiting else {
             return false
         }
 
         let result = await waiting.result
 
-        endPause()
+        endStep()
 
         switch result {
         case .success:
@@ -72,9 +80,46 @@ extension CloudSyncSession {
         }
     }
 
-    /// Starts the wait under the lock, so that a `stop()` or `reset()` either comes first and is
-    /// seen here, or comes after and finds the wait to cancel.
-    private func beginPause(_ pause: Pause, whileNextIs work: SyncWork) -> Task<Void, Error>? {
+    // MARK: Sending
+
+    /// Hands the work to the operation handler, as long as it is what the session should do next,
+    /// and waits for the result. Returns nil if the work was not sent, or if `stop()` or `reset()`
+    /// cancelled the operation and it did not succeed regardless.
+    private func send(_ work: SyncWork) async -> Result<SyncWork.Result, Error>? {
+        let handedOver = Unchecked(value: work)
+
+        let operation: Task<Unchecked<Result<SyncWork.Result, Error>>, Never>? = beginStep(whileNextIs: work) {
+            Task(priority: .userInitiated) {
+                Unchecked(value: await self.operationHandler.perform(handedOver.value))
+            }
+        }
+
+        guard let operation else {
+            return nil
+        }
+
+        let result = await operation.value.value
+
+        endStep()
+
+        // Whatever a cancelled operation reports in place of a result says nothing about the
+        // work, which stays queued. A cancelled operation that succeeded anyway did the work.
+        if operation.isCancelled, case .failure = result {
+            return nil
+        }
+
+        return result
+    }
+
+    // MARK: Steps
+
+    /// Starts something for the loop to wait on and makes it the thing `stop()` and `reset()`
+    /// cancel. This happens under the lock, so that a `stop()` or `reset()` either comes first and
+    /// is seen here, in which case nothing is started, or comes after and finds the step to cancel.
+    private func beginStep<Success, Failure>(
+        whileNextIs work: SyncWork,
+        _ start: () -> Task<Success, Failure>
+    ) -> Task<Success, Failure>? {
         lock.lock()
         defer { lock.unlock() }
 
@@ -82,20 +127,18 @@ extension CloudSyncSession {
             return nil
         }
 
-        let waiting = Task(priority: .userInitiated) { [pacing] in
-            try await pacing.pause(pause)
-        }
+        let step = start()
 
-        currentPause = waiting
+        cancelCurrentStep = { step.cancel() }
 
-        return waiting
+        return step
     }
 
-    private func endPause() {
+    private func endStep() {
         lock.lock()
         defer { lock.unlock() }
 
-        currentPause = nil
+        cancelCurrentStep = nil
     }
 
     // MARK: Results
@@ -225,4 +268,11 @@ extension CloudSyncSession {
 
         return nil
     }
+}
+
+/// Carries a value between the run loop and the task of the one operation it is waiting on. Only
+/// one of the two touches the value at a time: the loop hands the work over and does not look at
+/// it again until the operation's task has finished and handed back the result.
+private struct Unchecked<Value>: @unchecked Sendable {
+    let value: Value
 }

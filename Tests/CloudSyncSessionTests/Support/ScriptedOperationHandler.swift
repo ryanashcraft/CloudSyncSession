@@ -65,11 +65,10 @@ struct ModifyRequest {
 
 /// An `OperationHandler` that answers from a script and records every request in order.
 ///
-/// Replies are chosen when the request arrives and delivered asynchronously on a private serial
-/// queue, the way CloudKit completes on its own threads.
+/// A reply is chosen when its request arrives and given after a suspension, so the session never
+/// gets its answer on the spot.
 final class ScriptedOperationHandler: OperationHandler {
     private let lock = NSLock()
-    private let replyQueue = DispatchQueue(label: "ScriptedOperationHandler.Reply")
 
     private var recordedCalls: [HandlerCall] = []
     private var inFlightCount = 0
@@ -81,8 +80,21 @@ final class ScriptedOperationHandler: OperationHandler {
     private var fetchReplies: [FetchReply] = []
     private var createZoneReplies: [SetupReply] = []
 
-    private var isHoldingReplies = false
-    private var heldDeliveries: [() -> Void] = []
+    private var holding = Holding.nothing
+    private var heldReplies: [UUID: CheckedContinuation<HeldReplyEnding, Never>] = [:]
+    private var cancelledBeforeBeingHeld = Set<UUID>()
+    private var cancelledCount = 0
+
+    private enum Holding {
+        case nothing
+        case untilReleasedOrCancelled
+        case untilReleased
+    }
+
+    private enum HeldReplyEnding {
+        case released
+        case cancelled
+    }
 
     // MARK: Scripting
 
@@ -108,30 +120,35 @@ final class ScriptedOperationHandler: OperationHandler {
 
     // MARK: Holding replies
 
-    /// From now on a reply is still chosen when its request arrives, but it is not delivered until
+    /// From now on a reply is still chosen when its request arrives, but it is not given until
     /// `releaseReplies()`. This is how a test acts while an operation is under way.
-    func holdReplies() {
-        withLock { isHoldingReplies = true }
+    ///
+    /// A held request that the session cancels ends there, the way a real handler stops a
+    /// cancelled operation. Pass `ignoringCancellation` for a request that carries on regardless,
+    /// like one the server had already received, so that its reply arrives after the session has
+    /// been stopped or reset.
+    func holdReplies(ignoringCancellation: Bool = false) {
+        withLock { holding = ignoringCancellation ? .untilReleased : .untilReleasedOrCancelled }
     }
 
-    /// Delivers the held replies and goes back to replying straight away.
+    /// Gives the held replies and goes back to replying straight away.
     func releaseReplies() {
-        let deliveries: [() -> Void] = withLock {
-            defer { heldDeliveries = [] }
+        let continuations: [CheckedContinuation<HeldReplyEnding, Never>] = withLock {
+            defer { heldReplies = [:] }
 
-            isHoldingReplies = false
+            holding = .nothing
 
-            return heldDeliveries
+            return Array(heldReplies.values)
         }
 
-        for delivery in deliveries {
-            replyQueue.async(execute: delivery)
+        for continuation in continuations {
+            continuation.resume(returning: .released)
         }
     }
 
     /// Whether a request has arrived whose reply is being held.
     var hasHeldReply: Bool {
-        withLock { !heldDeliveries.isEmpty }
+        withLock { !heldReplies.isEmpty }
     }
 
     // MARK: Observation
@@ -149,60 +166,61 @@ final class ScriptedOperationHandler: OperationHandler {
         withLock { highestInFlightCount }
     }
 
+    /// How many requests ended because the session cancelled them.
+    var cancelledCallCount: Int {
+        withLock { cancelledCount }
+    }
+
     // MARK: OperationHandler
 
-    func handle(createZoneOperation _: CreateZoneOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
+    func handle(createZoneOperation _: CreateZoneOperation) async throws -> Bool {
         let reply: SetupReply = withLock {
             begin(.createZone)
 
             return createZoneReplies.isEmpty ? .succeed : createZoneReplies.removeFirst()
         }
 
-        finish {
-            switch reply {
-            case .succeed:
-                completion(.success(true))
-            case let .fail(code):
-                completion(.failure(CKError(code)))
-            }
+        try await waitToReply()
+
+        switch reply {
+        case .succeed:
+            return true
+        case let .fail(code):
+            throw CKError(code)
         }
     }
 
-    func handle(createSubscriptionOperation _: CreateSubscriptionOperation, completion: @escaping (Result<Bool, Error>) -> Void) {
+    func handle(createSubscriptionOperation _: CreateSubscriptionOperation) async throws -> Bool {
         withLock { begin(.createSubscription) }
 
-        finish {
-            completion(.success(true))
-        }
+        try await waitToReply()
+
+        return true
     }
 
-    func handle(fetchOperation: FetchOperation, completion: @escaping (Result<FetchOperation.Response, Error>) -> Void) {
+    func handle(fetchOperation: FetchOperation) async throws -> FetchOperation.Response {
         let reply: FetchReply = withLock {
             begin(.fetch)
 
             return fetchReplies.isEmpty ? .page(changed: 0, hasMore: false) : fetchReplies.removeFirst()
         }
 
-        finish {
-            switch reply {
-            case let .page(changed, hasMore):
-                completion(
-                    .success(
-                        FetchOperation.Response(
-                            changeToken: fetchOperation.changeToken,
-                            changedRecords: (0 ..< changed).map { _ in makeRecord() },
-                            deletedRecordIDs: [],
-                            hasMore: hasMore
-                        )
-                    )
-                )
-            case let .fail(code):
-                completion(.failure(CKError(code)))
-            }
+        try await waitToReply()
+
+        switch reply {
+        case let .page(changed, hasMore):
+            return FetchOperation.Response(
+                changeToken: fetchOperation.changeToken,
+                changedRecords: (0 ..< changed).map { _ in makeRecord() },
+                deletedRecordIDs: [],
+                hasMore: hasMore
+            )
+        case let .fail(code):
+            throw CKError(code)
         }
     }
 
-    func handle(modifyOperation: ModifyOperation, completion: @escaping (Result<ModifyOperation.Response, Error>) -> Void) {
+    func handle(modifyOperation: ModifyOperation) async throws -> ModifyOperation.Response {
         let tag = modifyOperation.tag
         let saves = modifyOperation.records.count
         let deletes = modifyOperation.recordIDsToDelete.count
@@ -220,22 +238,18 @@ final class ScriptedOperationHandler: OperationHandler {
             return modifyReplies.isEmpty ? .succeed : modifyReplies.removeFirst()
         }
 
-        finish {
-            switch reply {
-            case .succeed:
-                completion(
-                    .success(
-                        ModifyOperation.Response(
-                            savedRecords: modifyOperation.records,
-                            deletedRecordIDs: modifyOperation.recordIDsToDelete
-                        )
-                    )
-                )
-            case let .fail(code):
-                completion(.failure(CKError(code)))
-            case let .partialFailure(codesBySaveIndex):
-                completion(.failure(makePartialFailure(for: modifyOperation, codesBySaveIndex: codesBySaveIndex)))
-            }
+        try await waitToReply()
+
+        switch reply {
+        case .succeed:
+            return ModifyOperation.Response(
+                savedRecords: modifyOperation.records,
+                deletedRecordIDs: modifyOperation.recordIDsToDelete
+            )
+        case let .fail(code):
+            throw CKError(code)
+        case let .partialFailure(codesBySaveIndex):
+            throw makePartialFailure(for: modifyOperation, codesBySaveIndex: codesBySaveIndex)
         }
     }
 
@@ -255,26 +269,68 @@ final class ScriptedOperationHandler: OperationHandler {
         highestInFlightCount = max(highestInFlightCount, inFlightCount)
     }
 
-    private func finish(_ deliver: @escaping () -> Void) {
-        // A request stops being outstanding at the moment its reply is given. Counting it down
-        // afterwards would overlap with the next request, which the session may send from another
-        // thread as soon as it has this reply.
-        let delivery = {
-            self.withLock { self.inFlightCount -= 1 }
+    /// Suspends until it is time to give the reply, and counts the request as no longer
+    /// outstanding from that moment. Throws if the request was cancelled while its reply was held.
+    private func waitToReply() async throws {
+        let ending = await suspendUntilTimeToReply()
 
-            deliver()
-        }
+        withLock {
+            inFlightCount -= 1
 
-        let isHeld: Bool = withLock {
-            if isHoldingReplies {
-                heldDeliveries.append(delivery)
+            if ending == .cancelled {
+                cancelledCount += 1
             }
-
-            return isHoldingReplies
         }
 
-        if !isHeld {
-            replyQueue.async(execute: delivery)
+        if ending == .cancelled {
+            throw CancellationError()
+        }
+    }
+
+    private func suspendUntilTimeToReply() async -> HeldReplyEnding {
+        switch withLock({ holding }) {
+        case .nothing:
+            await Task.yield()
+
+            return .released
+        case .untilReleased:
+            let id = UUID()
+
+            return await withCheckedContinuation { continuation in
+                withLock { heldReplies[id] = continuation }
+            }
+        case .untilReleasedOrCancelled:
+            let id = UUID()
+
+            return await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    let wasCancelled: Bool = withLock {
+                        if cancelledBeforeBeingHeld.remove(id) != nil {
+                            return true
+                        }
+
+                        heldReplies[id] = continuation
+
+                        return false
+                    }
+
+                    if wasCancelled {
+                        continuation.resume(returning: .cancelled)
+                    }
+                }
+            } onCancel: {
+                let continuation: CheckedContinuation<HeldReplyEnding, Never>? = withLock {
+                    if let continuation = heldReplies.removeValue(forKey: id) {
+                        return continuation
+                    }
+
+                    cancelledBeforeBeingHeld.insert(id)
+
+                    return nil
+                }
+
+                continuation?.resume(returning: .cancelled)
+            }
         }
     }
 }

@@ -7,6 +7,7 @@ Run them before releasing a change to how `CloudKitOperationHandler` drives Clou
 ## What they check
 
 - `CancellationProbeTests`: what a cancelled `CKModifyRecordsOperation` and `CKFetchRecordZoneChangesOperation` do. Does the completion block still run, with which error, and does a cancelled modify still reach the server? These tests record what they see (lines starting `LIVE-OBSERVATION`) and fail only if an operation never finishes.
+- `HandlerCancellationTests`: that a request cancelled while it is with CloudKit is left to finish and reports its real result, that nothing reaches the server after the handler has returned, and that a request cancelled while the handler is holding it back is never sent.
 - `ErrorShapeTests`: that a conflict on one record of a batch arrives as a `partialFailure` carrying per-record errors, which the session's conflict handling depends on, and what a fetch from a deleted zone reports.
 - `StopAndWaitTests`: that after `stopAndWait()` and deleting the zone, nothing the session sent earlier brings the zone back.
 
@@ -40,7 +41,7 @@ Recorded on 2026-11-11 on macOS 27.0 with Xcode 27.0. Not yet run on iOS.
 
 - A cancelled `CKModifyRecordsOperation` calls `modifyRecordsCompletionBlock` with `CKError.operationCancelled`, whether it is cancelled before it starts or while it is executing. The block runs before the operation is marked finished.
 - A cancelled `CKFetchRecordZoneChangesOperation` calls `fetchRecordZoneChangesResultBlock` with `operationCancelled` in both cases too. Its per-zone result block does not run.
-- A modify of 200 records cancelled about 20 ms after it began executing left no records on the server. That is one observation of a race, not a guarantee: a cancelled modify can still have been committed.
+- Cancelling does not recall a request that has been sent. A modify of 200 records cancelled about 20 ms after it began executing left no records on the server, but one cancelled 150 ms in was reported as cancelled at once while all 200 records were saved. This is why `CloudKitOperationHandler` does not cancel an operation it has already handed to CloudKit.
 - A conflict on one record of a two-record batch arrives as `partialFailure` with `serverRecordChanged` for the conflicted record, carrying the server's copy, and `batchRequestFailed` for the other.
 - A fetch from a deleted zone fails with `zoneNotFound`.
 - With a modify in progress, `stopAndWait()` returned after about half a second, and the zone, deleted straight afterwards, had not come back five seconds later.

@@ -494,7 +494,7 @@ final class SessionBehaviorTests: XCTestCase {
         let harness = makeHarness()
         harness.handler.scriptModify(.fail(.networkUnavailable))
         harness.startRunning()
-        harness.handler.holdReplies()
+        harness.handler.holdReplies(ignoringCancellation: true)
 
         harness.modify("A")
         harness.waitUntilReplyIsHeld()
@@ -513,9 +513,62 @@ final class SessionBehaviorTests: XCTestCase {
         XCTAssertEqual(harness.completions, [.modify("A", saved: 1)])
     }
 
-    func testFailureThatArrivesAfterStoppingAndStartingAgainIsRetriedAfterItsWait() {
+    func testStoppingCancelsTheOperationUnderWayAndKeepsItsWork() {
         let harness = makeHarness()
-        harness.handler.scriptModify(.fail(.networkUnavailable))
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.modify("A")
+        harness.waitUntilReplyIsHeld()
+        harness.stop()
+        harness.settle()
+
+        XCTAssertEqual(harness.handler.cancelledCallCount, 1)
+        XCTAssertEqual(harness.completions, [])
+        XCTAssertTrue(harness.hasWorkQueued)
+        XCTAssertNil(harness.haltCode, "Being cancelled is not an error to halt on")
+
+        harness.handler.releaseReplies()
+        harness.start()
+        harness.settle()
+
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .modify("A", saves: 1)])
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1)])
+        XCTAssertFalse(harness.isHalted)
+    }
+
+    func testResettingCancelsTheOperationUnderWay() {
+        let harness = makeHarness()
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.modify("A")
+        harness.waitUntilReplyIsHeld()
+        harness.reset()
+        harness.settle()
+
+        XCTAssertEqual(harness.handler.cancelledCallCount, 1)
+        XCTAssertEqual(harness.completions, [])
+        XCTAssertFalse(harness.hasWorkQueued)
+        XCTAssertFalse(harness.isHalted)
+    }
+
+    func testStopAndWaitReturnsOnceTheCancelledOperationHasWoundDown() {
+        let harness = makeHarness()
+        harness.startRunning()
+        harness.handler.holdReplies()
+
+        harness.modify("A")
+        harness.waitUntilReplyIsHeld()
+        let hasReturned = harness.beginStopAndWait()
+
+        harness.waitUntil("stopAndWait has returned") { hasReturned() }
+        XCTAssertEqual(harness.handler.cancelledCallCount, 1)
+        XCTAssertTrue(harness.handler.isIdle)
+    }
+
+    func testOperationCancelledByStoppingIsSentAgainOnRestartWithoutCountingAsAFailure() {
+        let harness = makeHarness()
         harness.startRunning()
         harness.handler.holdReplies()
 
@@ -528,16 +581,35 @@ final class SessionBehaviorTests: XCTestCase {
         harness.settle()
 
         XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .modify("A", saves: 1), .modify("B", saves: 1)])
-        XCTAssertEqual(harness.retryBackoffs, [0], "The failure must be handled as a retry, with its wait, not resent at once")
+        XCTAssertEqual(harness.retryBackoffs, [])
         XCTAssertEqual(harness.completions, [.modify("A", saved: 1), .modify("B", saved: 1)])
+        XCTAssertFalse(harness.isHalted)
         XCTAssertEqual(harness.handler.maxConcurrentCalls, 1)
+    }
+
+    func testFailureReportedByAnOperationThatWasCancelledIsNotActedOn() {
+        let harness = makeHarness()
+        harness.handler.scriptModify(.fail(.notAuthenticated))
+        harness.startRunning()
+        harness.handler.holdReplies(ignoringCancellation: true)
+
+        harness.modify("A")
+        harness.waitUntilReplyIsHeld()
+        harness.stop()
+        harness.start()
+        harness.handler.releaseReplies()
+        harness.settle()
+
+        XCTAssertFalse(harness.isHalted, "An error from an operation the session cancelled says nothing about the work")
+        XCTAssertEqual(harness.workCalls, [.modify("A", saves: 1), .modify("A", saves: 1)])
+        XCTAssertEqual(harness.completions, [.modify("A", saved: 1)])
     }
 
     func testMissingZoneReportedAfterStoppingDoesNotRecreateTheZone() {
         let harness = makeHarness()
         harness.handler.scriptFetch(.fail(.zoneNotFound))
         harness.startRunning()
-        harness.handler.holdReplies()
+        harness.handler.holdReplies(ignoringCancellation: true)
 
         harness.fetch()
         harness.waitUntilReplyIsHeld()
@@ -551,7 +623,7 @@ final class SessionBehaviorTests: XCTestCase {
     func testSuccessThatArrivesAfterStoppingIsStillReported() {
         let harness = makeHarness()
         harness.startRunning()
-        harness.handler.holdReplies()
+        harness.handler.holdReplies(ignoringCancellation: true)
 
         harness.modify("A")
         harness.waitUntilReplyIsHeld()
@@ -571,7 +643,7 @@ final class SessionBehaviorTests: XCTestCase {
     func testResultThatArrivesAfterResettingIsDropped() {
         let harness = makeHarness()
         harness.startRunning()
-        harness.handler.holdReplies()
+        harness.handler.holdReplies(ignoringCancellation: true)
 
         harness.modify("A")
         harness.waitUntilReplyIsHeld()
@@ -586,7 +658,7 @@ final class SessionBehaviorTests: XCTestCase {
     func testStopAndWaitReturnsOnlyOnceTheOperationUnderWayHasFinished() {
         let harness = makeHarness()
         harness.startRunning()
-        harness.handler.holdReplies()
+        harness.handler.holdReplies(ignoringCancellation: true)
 
         harness.modify("A")
         harness.waitUntilReplyIsHeld()
@@ -615,7 +687,7 @@ final class SessionBehaviorTests: XCTestCase {
     func testRestartingWhileAnOperationIsUnderWayDoesNotSendASecondOne() {
         let harness = makeHarness()
         harness.startRunning()
-        harness.handler.holdReplies()
+        harness.handler.holdReplies(ignoringCancellation: true)
 
         harness.modify("A")
         harness.modify("B")
