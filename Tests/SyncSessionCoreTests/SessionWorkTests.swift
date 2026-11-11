@@ -1,5 +1,4 @@
-@testable import CloudSyncSession
-import CloudKit
+@testable import SyncSessionCore
 import XCTest
 
 final class SyncWorkTests: XCTestCase {

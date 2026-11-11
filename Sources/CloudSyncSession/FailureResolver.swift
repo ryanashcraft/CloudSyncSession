@@ -23,28 +23,9 @@
 
 import CloudKit
 import Foundation
+import SyncSessionCore
 
-/// What the session should do about work that failed.
-enum FailureResolution {
-    /// Stop until the app starts the session again. The work keeps its place in the queue.
-    case halt(Error)
-
-    /// Try again after a wait. Carries the work to retry, which differs from the failed work when
-    /// a fetch has to restart from a fresh change token.
-    case retry(SyncWork, Error, TimeInterval?)
-
-    /// Send a modify again with these records and deletions, after resolving conflicts and
-    /// leaving out what the server no longer has.
-    case resend(records: [CKRecord], recordIDsToDelete: [CKRecord.ID])
-
-    /// The server rejected the request as too large; send it in smaller pieces.
-    case split(Error)
-
-    /// The zone is gone. Create it again, then try the work again.
-    case recreateZone(Error)
-}
-
-/// Decides what to do about a failure. It changes nothing in the session. Its only side effects
+/// Decides what to do about a failure reported by CloudKit. It changes nothing in the session. Its only side effects
 /// are calls to the app's conflict and change-token resolvers, and writing the resolved fields
 /// into the server's copy of a conflicted record, which is the record that gets sent again.
 struct FailureResolver {
@@ -54,7 +35,7 @@ struct FailureResolver {
     /// The function handler that will be called when the change token should be expired.
     let resolveExpiredChangeToken: ChangeTokenExpiredResolver?
 
-    func resolution(for error: Error, work: SyncWork) -> FailureResolution {
+    func resolution(for error: Error, work: SyncWork) -> FailureResolution<CloudKitBackend> {
         if let ckError = error as? CKError {
             Log.error.error("Handling CloudKit error (code \(ckError.errorCode)): \(ckError.localizedDescription)")
 
@@ -229,7 +210,7 @@ struct FailureResolver {
             case .limitExceeded:
                 return .split(error)
             case .zoneNotFound, .userDeletedZone:
-                return .recreateZone(error)
+                return .redoSetup(.zone, error)
             case .assetNotAvailable,
                  .assetFileNotFound,
                  .assetFileModified,

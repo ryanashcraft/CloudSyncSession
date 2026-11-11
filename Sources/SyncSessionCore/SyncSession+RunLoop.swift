@@ -1,4 +1,4 @@
-import CloudKit
+import Foundation
 
 /// The run loop: the one place that decides what the session does next.
 ///
@@ -8,11 +8,11 @@ import CloudKit
 /// place ahead of everything queued after it.
 ///
 /// The loop is a task that exists only while there is work the session is allowed to do. It waits
-/// on one thing at a time: a pause of its own, or an operation that is with the handler. `stop()`
+/// on one thing at a time: a pause of its own, or an operation that is being carried out. `stop()`
 /// and `reset()` change the state and cancel that one thing. The loop is not itself cancelled: it
 /// waits for the cancelled operation to wind down, so a second operation cannot be sent alongside
 /// it, and then acts on the state it finds, which is how it comes to send nothing more.
-extension CloudSyncSession {
+extension SyncSession {
     /// Starts the run loop unless it is already running or there is nothing to do. Call with the lock held.
     func startRunLoopIfNeeded() {
         guard runLoopTask == nil, lockedState.currentWork != nil else {
@@ -57,7 +57,7 @@ extension CloudSyncSession {
 
     /// Waits, as long as `work` is what the session should do next. Returns false without waiting
     /// if it is not, and false as soon as `stop()` or `reset()` cuts the wait short.
-    private func pause(_ pause: Pause, whileNextIs work: SyncWork) async -> Bool {
+    private func pause(_ pause: Pause, whileNextIs work: Work) async -> Bool {
         let waiting: Task<Void, Error>? = beginStep(whileNextIs: work) { [pacing] in
             Task(priority: .userInitiated) {
                 try await pacing.pause(pause)
@@ -82,15 +82,15 @@ extension CloudSyncSession {
 
     // MARK: Sending
 
-    /// Hands the work to the operation handler, as long as it is what the session should do next,
+    /// Has the work carried out, as long as it is what the session should do next,
     /// and waits for the result. Returns nil if the work was not sent, or if `stop()` or `reset()`
     /// cancelled the operation and it did not succeed regardless.
-    private func send(_ work: SyncWork) async -> Result<SyncWork.Result, Error>? {
+    private func send(_ work: Work) async -> Result<Work.Result, Error>? {
         let handedOver = Unchecked(value: work)
 
-        let operation: Task<Unchecked<Result<SyncWork.Result, Error>>, Never>? = beginStep(whileNextIs: work) {
+        let operation: Task<Unchecked<Result<Work.Result, Error>>, Never>? = beginStep(whileNextIs: work) {
             Task(priority: .userInitiated) {
-                Unchecked(value: await self.operationHandler.perform(handedOver.value))
+                Unchecked(value: await self.perform(handedOver.value))
             }
         }
 
@@ -117,7 +117,7 @@ extension CloudSyncSession {
     /// cancel. This happens under the lock, so that a `stop()` or `reset()` either comes first and
     /// is seen here, in which case nothing is started, or comes after and finds the step to cancel.
     private func beginStep<Success, Failure>(
-        whileNextIs work: SyncWork,
+        whileNextIs work: Work,
         _ start: () -> Task<Success, Failure>
     ) -> Task<Success, Failure>? {
         lock.lock()
@@ -143,7 +143,7 @@ extension CloudSyncSession {
 
     // MARK: Results
 
-    private func complete(_ work: SyncWork, with result: SyncWork.Result) {
+    private func complete(_ work: Work, with result: Work.Result) {
         update { change in
             // Reported even if the session was stopped while the operation was under way: the
             // server has the change, and the app needs to know. After a reset the work is no longer
@@ -157,23 +157,23 @@ extension CloudSyncSession {
         }
     }
 
-    private func recover(_ work: SyncWork, from error: Error) async {
+    private func recover(_ work: Work, from error: Error) async {
         // Skip the app's conflict resolver when its answer would not be used.
         guard shouldAct(onFailureOf: work, in: state) else {
             return
         }
 
         // Runs the app's conflict resolver, so it happens before taking the lock.
-        let resolution = failureResolver.resolution(for: error, work: work)
+        let resolution = resolveFailure(error, work)
 
-        let retry: (work: SyncWork, delay: TimeInterval)? = update { change in
+        let retry: (work: Work, delay: TimeInterval)? = update { change in
             guard shouldAct(onFailureOf: work, in: change.state) else {
                 return nil
             }
 
             change.emit(.workFailure(work, error))
 
-            return apply(resolution, to: work, in: &change)
+            return apply(resolution, to: work, failedWith: error, in: &change)
         }
 
         guard let retry, await pause(.retryBackoff(retry.delay), whileNextIs: work) else {
@@ -193,17 +193,18 @@ extension CloudSyncSession {
     /// Whether to act on a failure of this work. Not while the session is halted: the work stays
     /// queued and is sent again when the session next starts. And not once the work has left the
     /// queue, which is what `reset()` does to it.
-    private func shouldAct(onFailureOf work: SyncWork, in state: SyncState) -> Bool {
+    private func shouldAct(onFailureOf work: Work, in state: State) -> Bool {
         !state.isHalted && state.contains(work)
     }
 
     /// Updates the queue for how the failure is to be handled. Returns the work to retry and how
     /// long to wait first when the answer is to retry.
     private func apply(
-        _ resolution: FailureResolution,
-        to work: SyncWork,
+        _ resolution: FailureResolution<Backend>,
+        to work: Work,
+        failedWith originalError: Error,
         in change: inout Change
-    ) -> (work: SyncWork, delay: TimeInterval)? {
+    ) -> (work: Work, delay: TimeInterval)? {
         func halt(_ error: Error) {
             change.emit(.halt(error))
             change.state.isHalted = true
@@ -223,13 +224,14 @@ extension CloudSyncSession {
                 halt(error)
             }
         case let .resend(records, recordIDsToDelete):
+            // Only a modify can be sent again with different records.
             guard case let .modify(failedOperation) = work else {
-                halt(CKError(.internalError))
+                halt(originalError)
 
                 break
             }
 
-            let operation = ModifyOperation(
+            let operation = SessionModifyOperation<Backend>(
                 records: records,
                 recordIDsToDelete: recordIDsToDelete,
                 checkpointID: failedOperation.checkpointID,
@@ -248,22 +250,22 @@ extension CloudSyncSession {
 
             change.emit(.split(work, error))
             change.state.apply(.replaced(halves), to: work)
-        case let .recreateZone(error):
-            // Counts against the work's retries, so a zone that keeps disappearing ends in a halt.
+        case let .redoSetup(step, error):
+            // Counts against the work's retries, so setup that keeps disappearing ends in a halt.
             guard RetryPolicy.decision(retryCount: work.retryCount, suggestedInterval: nil) != .giveUp else {
                 halt(error)
 
                 break
             }
 
-            let createZoneOperation = CreateZoneOperation(zoneID: zoneID)
+            let setupOperation = SessionSetupOperation<Backend>(step: step)
 
-            if change.state.createZoneQueue.isEmpty {
-                change.emit(.doWork(.createZone(createZoneOperation)))
+            if !change.state.hasQueuedSetup(of: step) {
+                change.emit(.doWork(.setup(setupOperation)))
             }
 
             change.emit(.retryWork(work))
-            change.state.apply(.zoneMissing(createZoneOperation), to: work)
+            change.state.apply(.setupMissing(setupOperation), to: work)
         }
 
         return nil

@@ -1,3 +1,5 @@
+import SyncSessionCore
+
 /// Carries out the session's work against a server.
 ///
 /// The session hands over one operation at a time and waits for the method to return before it

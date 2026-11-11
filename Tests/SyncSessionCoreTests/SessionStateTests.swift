@@ -1,11 +1,5 @@
-import CloudKit
-@testable import CloudSyncSession
+@testable import SyncSessionCore
 import XCTest
-
-private let testZoneID = CKRecordZone.ID(
-    zoneName: "test",
-    ownerName: CKCurrentUserDefaultName
-)
 
 /// The rules that decide which work is next and how the queues change when an attempt at work
 /// ends. These are plain value changes on `SyncState`, checked here without a session.
@@ -28,7 +22,7 @@ final class SyncStateTests: XCTestCase {
 
         XCTAssertNil(state.currentWork)
 
-        let createZone = SyncWork.createZone(CreateZoneOperation(zoneID: testZoneID))
+        let createZone = SyncWork.setup(SetupOperation(step: .zone))
         state.enqueue(createZone)
 
         XCTAssertEqual(state.currentWork?.id, createZone.id)
@@ -64,15 +58,15 @@ final class SyncStateTests: XCTestCase {
     func testZoneIsCreatedBeforeTheSubscription() {
         var state = SyncState()
         state.hasGoodAccountStatus = true
-        let createSubscription = SyncWork.createSubscription(CreateSubscriptionOperation(zoneID: testZoneID))
-        let createZone = SyncWork.createZone(CreateZoneOperation(zoneID: testZoneID))
+        let createSubscription = SyncWork.setup(SetupOperation(step: .subscription))
+        let createZone = SyncWork.setup(SetupOperation(step: .zone))
 
         state.enqueue(createSubscription)
         state.enqueue(createZone)
 
         XCTAssertEqual(state.currentWork?.id, createZone.id)
 
-        state.apply(.succeeded(.createZone(true)), to: createZone)
+        state.apply(.succeeded(.setup(true)), to: createZone)
 
         XCTAssertEqual(state.currentWork?.id, createSubscription.id)
     }
@@ -164,7 +158,7 @@ final class SyncStateTests: XCTestCase {
         let modify = makeModify()
 
         state.enqueue(modify)
-        state.apply(.retryScheduled(CKError(.networkUnavailable)), to: modify)
+        state.apply(.retryScheduled(TestError()), to: modify)
 
         XCTAssertEqual(state.retryCount, 1)
         XCTAssertNotNil(state.lastRetryError)
@@ -201,35 +195,35 @@ final class SyncStateTests: XCTestCase {
         XCTAssertEqual(state.modifyQueue.map(\.id), replacements.map(\.id) + [second.id])
     }
 
-    func testMissingZoneIsRecreatedAheadOfTheWorkThatFoundItMissing() {
+    func testMissingSetupIsRedoneAheadOfTheWorkThatFoundItMissing() {
         var state = makeRunningState()
         let first = makeModify()
         let second = makeModify()
-        let createZoneOperation = CreateZoneOperation(zoneID: testZoneID)
+        let createZoneOperation = SetupOperation(step: .zone)
 
         state.enqueue(first)
         state.enqueue(second)
-        state.apply(.zoneMissing(createZoneOperation), to: first)
+        state.apply(.setupMissing(createZoneOperation), to: first)
 
-        XCTAssertEqual(state.operationMode, .createZone)
+        XCTAssertEqual(state.operationMode, .setup(.zone))
         XCTAssertEqual(state.currentWork?.id, createZoneOperation.id)
         XCTAssertEqual(state.modifyQueue.map(\.id), [first.id, second.id])
         XCTAssertEqual(state.modifyQueue.first?.retryCount, 1)
 
-        state.apply(.succeeded(.createZone(true)), to: .createZone(createZoneOperation))
+        state.apply(.succeeded(.setup(true)), to: .setup(createZoneOperation))
 
         XCTAssertEqual(state.currentWork?.id, first.id)
     }
 
-    func testMissingZoneDoesNotQueueASecondCreateZone() {
+    func testMissingSetupIsNotQueuedTwice() {
         var state = makeRunningState()
         let first = makeModify()
 
         state.enqueue(first)
-        state.apply(.zoneMissing(CreateZoneOperation(zoneID: testZoneID)), to: first)
-        state.apply(.zoneMissing(CreateZoneOperation(zoneID: testZoneID)), to: first)
+        state.apply(.setupMissing(SetupOperation(step: .zone)), to: first)
+        state.apply(.setupMissing(SetupOperation(step: .zone)), to: first)
 
-        XCTAssertEqual(state.createZoneQueue.count, 1)
+        XCTAssertEqual(state.setupQueue.count, 1)
     }
 
     func testOutcomeForWorkThatIsNoLongerQueuedChangesNothing() {
@@ -315,13 +309,13 @@ final class SyncStateTests: XCTestCase {
     }
 
     private func finishSetup(of state: inout SyncState) {
-        let createZone = SyncWork.createZone(CreateZoneOperation(zoneID: testZoneID))
-        let createSubscription = SyncWork.createSubscription(CreateSubscriptionOperation(zoneID: testZoneID))
+        let createZone = SyncWork.setup(SetupOperation(step: .zone))
+        let createSubscription = SyncWork.setup(SetupOperation(step: .subscription))
 
         state.hasGoodAccountStatus = true
         state.enqueue(createZone)
         state.enqueue(createSubscription)
-        state.apply(.succeeded(.createZone(true)), to: createZone)
-        state.apply(.succeeded(.createSubscription(true)), to: createSubscription)
+        state.apply(.succeeded(.setup(true)), to: createZone)
+        state.apply(.succeeded(.setup(true)), to: createSubscription)
     }
 }

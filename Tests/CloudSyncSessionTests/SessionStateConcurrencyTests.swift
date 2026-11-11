@@ -1,6 +1,7 @@
 import CloudKit
 @testable import CloudSyncSession
 import Combine
+@testable import SyncSessionCore
 import XCTest
 
 private let concurrencyTestZoneID = CKRecordZone.ID(

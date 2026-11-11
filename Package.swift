@@ -15,6 +15,11 @@ let package = Package(
             name: "CloudSyncSession",
             targets: ["CloudSyncSession"]
         ),
+        // The sync engine without a backend. CloudSyncSession is this plus CloudKit.
+        .library(
+            name: "SyncSessionCore",
+            targets: ["SyncSessionCore"]
+        ),
     ],
     dependencies: [
         .package(
@@ -25,8 +30,19 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "SyncSessionCore",
+            dependencies: [
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .enableUpcomingFeature("StrictConcurrency"),
+            ]
+        ),
+        .target(
             name: "CloudSyncSession",
             dependencies: [
+                "SyncSessionCore",
                 .product(name: "PID", package: "swift-pid"),
                 .product(name: "Logging", package: "swift-log"),
             ],
@@ -36,8 +52,15 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "SyncSessionCoreTests",
+            dependencies: ["SyncSessionCore"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+            ]
+        ),
+        .testTarget(
             name: "CloudSyncSessionTests",
-            dependencies: ["CloudSyncSession"],
+            dependencies: ["CloudSyncSession", "SyncSessionCore"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ]
