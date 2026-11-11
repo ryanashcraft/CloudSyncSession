@@ -212,6 +212,12 @@ There are two test suites: `CloudSyncSessionTests` and `SyncStateTests`. `CloudS
 
 `SyncStateTests` asserts that the state is correctly updated based on certain events.
 
+Three further suites describe the session purely from the outside, through `SessionHarness` and a `ScriptedOperationHandler` in `Tests/CloudSyncSessionTests/Support`. A test scripts how the handler replies, submits work, and asserts on the requests the handler received and the completions the session reported. These test files do not import the library, so they do not depend on how the session is built.
+
+- `SessionBehaviorTests`: behavior that must hold, such as ordering, retries, splitting, and conflict resolution.
+- `SessionKnownDefectTests`: correct behavior the session does not have yet, each wrapped in a strict `XCTExpectFailure`. When a defect is fixed its test reports an unexpected pass and should move to `SessionBehaviorTests`.
+- `SessionQueueInvariantTests`: seeded random mixes of operations checked against queue invariants.
+
 ## Limitations
 
 CloudSyncSession is not intended to be a drop-in solution to integrating CloudKit into your app. You need to correctly persist metadata and records to disk. In addition, you must use the appropriate hooks to convert your data models to and from CKRecords.
