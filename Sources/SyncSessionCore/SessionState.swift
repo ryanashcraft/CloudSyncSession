@@ -1,9 +1,9 @@
 import Foundation
 
 /// The state of a session.
-public struct SessionState<Backend: SyncBackend> {
+public struct SessionState<Backend: SyncBackend>: Sendable {
     /// The various modes that the session can be operating in.
-    public enum OperationMode: Hashable {
+    public enum OperationMode: Hashable, Sendable {
         case modify
         case fetch
         case setup(Backend.SetupStep)

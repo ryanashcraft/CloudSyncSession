@@ -94,31 +94,25 @@ struct SessionObservers<Backend: SyncBackend> {
         workInFlight: SessionWork<Backend>?
     ) {
         for event in announcedEvents {
-            let handedOut = Unchecked(value: event)
-
             for continuation in events.values {
-                continuation.yield(handedOut.value)
+                continuation.yield(event)
             }
 
             switch event {
             case let .workSuccess(.fetch(operation), .fetch(response)):
-                let completion = Unchecked(value: (operation, response))
-
                 for continuation in fetchCompletions.values {
-                    continuation.yield(completion.value)
+                    continuation.yield((operation, response))
                 }
 
                 if let performID = operation.performID, case let .fetch(continuation) = waiters[performID] {
                     waiters[performID] = nil
                     resumptions.append {
-                        continuation.resume(returning: completion.value.1)
+                        continuation.resume(returning: response)
                     }
                 }
             case let .workSuccess(.modify(operation), .modify(response)):
-                let completion = Unchecked(value: (operation, response))
-
                 for continuation in modifyCompletions.values {
-                    continuation.yield(completion.value)
+                    continuation.yield((operation, response))
                 }
 
                 if let performID = operation.performID, case let .modify(continuation, savedRecords, deletedRecordIDs) = waiters[performID] {
@@ -129,12 +123,10 @@ struct SessionObservers<Backend: SyncBackend> {
                         waiters[performID] = .modify(continuation, savedRecords: savedRecords, deletedRecordIDs: deletedRecordIDs)
                     } else {
                         waiters[performID] = nil
-                        let combined = Unchecked(
-                            value: SessionModifyOperation<Backend>.Response(savedRecords: savedRecords, deletedRecordIDs: deletedRecordIDs)
-                        )
+                        let combined = SessionModifyOperation<Backend>.Response(savedRecords: savedRecords, deletedRecordIDs: deletedRecordIDs)
 
                         resumptions.append {
-                            continuation.resume(returning: combined.value)
+                            continuation.resume(returning: combined)
                         }
                     }
                 }
@@ -172,10 +164,8 @@ struct SessionObservers<Backend: SyncBackend> {
             state.withdrawWork(performID: performID, except: workInFlight?.id)
         }
 
-        let handedOut = Unchecked(value: state)
-
         for continuation in states.values {
-            continuation.yield(handedOut.value)
+            continuation.yield(state)
         }
     }
 

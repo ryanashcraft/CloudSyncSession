@@ -1,28 +1,30 @@
 import Foundation
 
 /// Describes the server a session syncs with: the types it trades in and the few facts about it
-/// that the session needs. A backend is never instantiated; it only names things, which is also
-/// why it can be `Sendable` whatever its record type is.
+/// that the session needs. A backend is never instantiated; it only names things.
+///
+/// Every type it names is `Sendable`, because the session hands records, tokens and statuses to
+/// whoever is listening, on whichever thread they listen from.
 ///
 /// The session itself is the same for every backend. What differs lives outside it: how an
 /// operation is carried out, and what to do about each error the server can report. A backend's
 /// library supplies those to `SyncSession`'s initializer.
 public protocol SyncBackend: Sendable {
     /// A record as the server stores it.
-    associatedtype Record
+    associatedtype Record: Sendable
 
     /// What identifies a record.
-    associatedtype RecordID: Hashable
+    associatedtype RecordID: Hashable & Sendable
 
     /// Marks a point in the server's history of changes, to fetch from.
-    associatedtype ChangeToken: Equatable
+    associatedtype ChangeToken: Equatable & Sendable
 
     /// What the backend reports about the user's account.
-    associatedtype AccountStatus
+    associatedtype AccountStatus: Sendable
 
     /// Something that must exist on the server before records can be fetched or modified, such as
     /// a CloudKit zone. A backend with nothing to set up uses `Never`.
-    associatedtype SetupStep: Hashable
+    associatedtype SetupStep: Hashable & Sendable
 
     /// Every setup step, in the order they must be done.
     static var setupSteps: [SetupStep] { get }

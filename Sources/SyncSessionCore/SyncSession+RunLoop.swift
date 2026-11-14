@@ -86,11 +86,9 @@ extension SyncSession {
     /// and waits for the result. Returns nil if the work was not sent, or if `stop()` or `reset()`
     /// cancelled the operation and it did not succeed regardless.
     private func send(_ work: Work) async -> Result<Work.Result, Error>? {
-        let handedOver = Unchecked(value: work)
-
-        let operation: Task<Unchecked<Result<Work.Result, Error>>, Never>? = beginStep(whileNextIs: work, handsWorkToBackend: true) {
+        let operation: Task<Result<Work.Result, Error>, Never>? = beginStep(whileNextIs: work, handsWorkToBackend: true) {
             Task(priority: .userInitiated) {
-                Unchecked(value: await self.performWork(handedOver.value))
+                await self.performWork(work)
             }
         }
 
@@ -98,7 +96,7 @@ extension SyncSession {
             return nil
         }
 
-        let result = await operation.value.value
+        let result = await operation.value
 
         endStep()
 

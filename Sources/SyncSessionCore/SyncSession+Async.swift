@@ -64,7 +64,7 @@ public extension SyncSession {
     var states: AsyncStream<State> {
         makeStream(bufferingPolicy: .bufferingNewest(1)) { observers, id, continuation, state in
             observers.states[id] = continuation
-            continuation.yield(Unchecked(value: state).value)
+            continuation.yield(state)
         }
     }
 

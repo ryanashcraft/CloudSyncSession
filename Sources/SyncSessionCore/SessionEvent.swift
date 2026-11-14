@@ -2,7 +2,7 @@ import Foundation
 
 /// Something the session did or was asked to do, published once on `eventsPublisher` for
 /// diagnostics. Events describe what happened; they do not drive the session.
-public enum SessionEvent<Backend: SyncBackend> {
+public enum SessionEvent<Backend: SyncBackend>: Sendable {
     /// Indicates the session was started.
     case start
 

@@ -1,8 +1,8 @@
 import Foundation
 
 /// One piece of work in a session's queues.
-public enum SessionWork<Backend: SyncBackend>: Identifiable {
-    public enum Result {
+public enum SessionWork<Backend: SyncBackend>: Identifiable, Sendable {
+    public enum Result: Sendable {
         case modify(SessionModifyOperation<Backend>.Response)
         case fetch(SessionFetchOperation<Backend>.Response)
 
@@ -92,8 +92,8 @@ public enum SessionWork<Backend: SyncBackend>: Identifiable {
     }
 }
 
-public struct SessionFetchOperation<Backend: SyncBackend>: Identifiable {
-    public struct Response {
+public struct SessionFetchOperation<Backend: SyncBackend>: Identifiable, Sendable {
+    public struct Response: Sendable {
         public let changeToken: Backend.ChangeToken?
         public let changedRecords: [Backend.Record]
         public let deletedRecordIDs: [Backend.RecordID]
@@ -134,8 +134,8 @@ public struct SessionFetchOperation<Backend: SyncBackend>: Identifiable {
     }
 }
 
-public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable {
-    public struct Response {
+public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable, Sendable {
+    public struct Response: Sendable {
         public let savedRecords: [Backend.Record]
         public let deletedRecordIDs: [Backend.RecordID]
 
@@ -147,7 +147,7 @@ public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable {
 
     public let id = UUID()
     public let checkpointID: UUID?
-    public let userInfo: [String: Any]?
+    public let userInfo: [String: any Sendable]?
 
     public internal(set) var records: [Backend.Record]
     public internal(set) var recordIDsToDelete: [Backend.RecordID]
@@ -157,7 +157,7 @@ public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable {
     /// takes a piece's place in the queue, carries the same value.
     var performID: UUID?
 
-    public init(records: [Backend.Record], recordIDsToDelete: [Backend.RecordID], checkpointID: UUID?, userInfo: [String: Any]?) {
+    public init(records: [Backend.Record], recordIDsToDelete: [Backend.RecordID], checkpointID: UUID?, userInfo: [String: any Sendable]?) {
         self.records = records
         self.recordIDsToDelete = recordIDsToDelete
         self.checkpointID = checkpointID
@@ -230,7 +230,7 @@ public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable {
 }
 
 /// Work that puts one of the backend's setup steps in place.
-public struct SessionSetupOperation<Backend: SyncBackend>: Identifiable {
+public struct SessionSetupOperation<Backend: SyncBackend>: Identifiable, Sendable {
     public let id = UUID()
     public let step: Backend.SetupStep
 
