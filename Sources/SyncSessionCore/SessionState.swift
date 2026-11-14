@@ -225,6 +225,25 @@ public struct SessionState<Backend: SyncBackend> {
         }
     }
 
+    /// Whether any work a `perform` call queued is still in a queue.
+    func hasWork(performID: UUID) -> Bool {
+        modifyQueue.contains { $0.performID == performID } || fetchQueue.contains { $0.performID == performID }
+    }
+
+    /// The `perform` calls that have work in a queue.
+    var queuedPerformIDs: Set<UUID> {
+        Set(modifyQueue.compactMap(\.performID) + fetchQueue.compactMap(\.performID))
+    }
+
+    /// Take the work a `perform` call queued out of the queues, apart from the one piece with the
+    /// given ID: a request the backend already has cannot be taken back.
+    mutating func withdrawWork(performID: UUID, except workInFlightID: UUID?) {
+        modifyQueue.removeAll { $0.performID == performID && $0.id != workInFlightID }
+        fetchQueue.removeAll { $0.performID == performID && $0.id != workInFlightID }
+
+        updateOperationMode()
+    }
+
     /// Whether a fetch from this change token is already waiting or under way.
     func hasQueuedFetch(from changeToken: Backend.ChangeToken?) -> Bool {
         fetchQueue.contains { $0.changeToken == changeToken }
@@ -243,6 +262,15 @@ public struct SessionState<Backend: SyncBackend> {
 
     /// Put other work in the place of work that is in a queue, keeping its position.
     private mutating func replaceWork(_ work: SessionWork<Backend>, with replacements: [SessionWork<Backend>]) {
+        // Stamped here so that work a backend builds for a retry cannot lose it.
+        let replacements = replacements.map { replacement in
+            var replacement = replacement
+
+            replacement.performID = work.performID
+
+            return replacement
+        }
+
         switch work {
         case let .fetch(operation):
             if let index = fetchQueue.firstIndex(where: { $0.id == operation.id }) {

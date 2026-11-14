@@ -37,6 +37,32 @@ public enum SessionWork<Backend: SyncBackend>: Identifiable {
         }
     }
 
+    /// The `perform` call this work belongs to, if one queued it.
+    var performID: UUID? {
+        get {
+            switch self {
+            case let .modify(operation):
+                return operation.performID
+            case let .fetch(operation):
+                return operation.performID
+            case .setup:
+                return nil
+            }
+        }
+        set {
+            switch self {
+            case var .modify(operation):
+                operation.performID = newValue
+                self = .modify(operation)
+            case var .fetch(operation):
+                operation.performID = newValue
+                self = .fetch(operation)
+            case .setup:
+                break
+            }
+        }
+    }
+
     var retried: SessionWork {
         switch self {
         case var .modify(operation):
@@ -94,6 +120,10 @@ public struct SessionFetchOperation<Backend: SyncBackend>: Identifiable {
 
     public internal(set) var retryCount: Int = 0
 
+    /// The `perform` call that queued this operation. Whatever takes this operation's place in
+    /// the queue carries the same value.
+    var performID: UUID?
+
     public init(changeToken: Backend.ChangeToken?) {
         self.changeToken = changeToken
     }
@@ -118,11 +148,24 @@ public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable {
     public internal(set) var recordIDsToDelete: [Backend.RecordID]
     public internal(set) var retryCount: Int = 0
 
+    /// The `perform` call that queued this operation. Every piece it is split into, and whatever
+    /// takes a piece's place in the queue, carries the same value.
+    var performID: UUID?
+
     public init(records: [Backend.Record], recordIDsToDelete: [Backend.RecordID], checkpointID: UUID?, userInfo: [String: Any]?) {
         self.records = records
         self.recordIDsToDelete = recordIDsToDelete
         self.checkpointID = checkpointID
         self.userInfo = userInfo
+    }
+
+    /// A piece of this operation, to send in its place.
+    private func piece(records: [Backend.Record], recordIDsToDelete: [Backend.RecordID], checkpointID: UUID?) -> SessionModifyOperation {
+        var piece = SessionModifyOperation(records: records, recordIDsToDelete: recordIDsToDelete, checkpointID: checkpointID, userInfo: userInfo)
+
+        piece.performID = performID
+
+        return piece
     }
 
     var shouldSplit: Bool {
@@ -134,10 +177,10 @@ public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable {
         let splitRecordIDsToDelete: [[Backend.RecordID]] = recordIDsToDelete.chunked(into: Backend.maxItemsPerModify)
 
         let recordChunks = splitRecords.map {
-            SessionModifyOperation(records: $0, recordIDsToDelete: [], checkpointID: nil, userInfo: userInfo)
+            piece(records: $0, recordIDsToDelete: [], checkpointID: nil)
         }
         let deletionChunks = splitRecordIDsToDelete.map {
-            SessionModifyOperation(records: [], recordIDsToDelete: $0, checkpointID: nil, userInfo: userInfo)
+            piece(records: [], recordIDsToDelete: $0, checkpointID: nil)
         }
 
         var chunks = recordChunks + deletionChunks
@@ -146,12 +189,7 @@ public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable {
         // waiters resolve only after every piece of the original operation
         // has completed.
         if let lastChunk = chunks.last {
-            chunks[chunks.count - 1] = SessionModifyOperation(
-                records: lastChunk.records,
-                recordIDsToDelete: lastChunk.recordIDsToDelete,
-                checkpointID: checkpointID,
-                userInfo: userInfo
-            )
+            chunks[chunks.count - 1] = piece(records: lastChunk.records, recordIDsToDelete: lastChunk.recordIDsToDelete, checkpointID: checkpointID)
         }
 
         return chunks
@@ -168,8 +206,8 @@ public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable {
             // One save and one deletion. Halving each list on its own would produce an empty
             // piece and this same operation again.
             return [
-                SessionModifyOperation(records: records, recordIDsToDelete: [], checkpointID: nil, userInfo: userInfo),
-                SessionModifyOperation(records: [], recordIDsToDelete: recordIDsToDelete, checkpointID: checkpointID, userInfo: userInfo),
+                piece(records: records, recordIDsToDelete: [], checkpointID: nil),
+                piece(records: [], recordIDsToDelete: recordIDsToDelete, checkpointID: checkpointID),
             ]
         }
 
@@ -180,8 +218,8 @@ public struct SessionModifyOperation<Backend: SyncBackend>: Identifiable {
         let secondHalfRecordIDsToDelete = Array(recordIDsToDelete[recordIDsToDelete.count / 2 ..< recordIDsToDelete.count])
 
         return [
-            SessionModifyOperation(records: firstHalfRecords, recordIDsToDelete: firstHalfRecordIDsToDelete, checkpointID: nil, userInfo: userInfo),
-            SessionModifyOperation(records: secondHalfRecords, recordIDsToDelete: secondHalfRecordIDsToDelete, checkpointID: checkpointID, userInfo: userInfo),
+            piece(records: firstHalfRecords, recordIDsToDelete: firstHalfRecordIDsToDelete, checkpointID: nil),
+            piece(records: secondHalfRecords, recordIDsToDelete: secondHalfRecordIDsToDelete, checkpointID: checkpointID),
         ]
     }
 }
