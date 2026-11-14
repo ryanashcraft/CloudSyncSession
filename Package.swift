@@ -6,9 +6,9 @@ import PackageDescription
 let package = Package(
     name: "CloudSyncSession",
     platforms: [
-        .iOS(.v15),
-        .watchOS(.v8),
-        .macOS(.v12),
+        .iOS(.v17),
+        .watchOS(.v10),
+        .macOS(.v14),
     ],
     products: [
         .library(

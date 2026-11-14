@@ -131,6 +131,70 @@ final class AppFacingSurfaceTests: XCTestCase {
         XCTAssertTrue(registry.current === session)
     }
 
+    func testAsyncSurfaceIsReachableThroughThePublicNames() async throws {
+        let session = CloudSyncSession(
+            operationHandler: SucceedingHandler(),
+            zoneID: zoneID,
+            accountStatusProvider: { .available },
+            resolveConflict: { client, _ in client },
+            resolveExpiredChangeToken: { nil }
+        )
+
+        var events: AsyncStream<SyncEvent>.Iterator = session.events.makeAsyncIterator()
+        var modifyCompletions: AsyncStream<(ModifyOperation, ModifyOperation.Response)>.Iterator = session.modifyCompletions.makeAsyncIterator()
+        var fetchCompletions: AsyncStream<(FetchOperation, FetchOperation.Response)>.Iterator = session.fetchCompletions.makeAsyncIterator()
+        var halts: AsyncStream<Error?>.Iterator = session.halts.makeAsyncIterator()
+        let states: AsyncStream<SyncState> = session.states
+
+        session.start()
+
+        let saved: ModifyOperation.Response = try await session.perform(
+            ModifyOperation(records: [makeRecord()], recordIDsToDelete: [], checkpointID: checkpointID, userInfo: nil)
+        )
+        let fetched: FetchOperation.Response = try await session.perform(FetchOperation(changeToken: nil))
+
+        XCTAssertEqual(saved.savedRecords.count, 1)
+        XCTAssertFalse(fetched.hasMore)
+
+        let modifyCompletion = await modifyCompletions.next()
+        let fetchCompletion = await fetchCompletions.next()
+
+        XCTAssertEqual(modifyCompletion?.0.checkpointID, checkpointID)
+        XCTAssertNotNil(fetchCompletion?.0.id)
+
+        guard case .start = await events.next() else {
+            return XCTFail("The first event should be the start")
+        }
+
+        guard case .some(nil) = await halts.next() else {
+            return XCTFail("A session that is not halted reports nil first")
+        }
+
+        session.stop()
+
+        let halt = await halts.next()
+
+        XCTAssertTrue((halt ?? nil) is StopError)
+
+        for await state in states where state.isHalted {
+            break
+        }
+
+        do {
+            _ = try await session.perform(FetchOperation(changeToken: nil))
+
+            XCTFail("A stopped session should not take work")
+        } catch SessionInterruption.stopped {
+            // Expected.
+        } catch SessionInterruption.halted {
+            XCTFail("stop() is reported as stopped, not halted")
+        } catch SessionInterruption.reset {
+            XCTFail("stop() is reported as stopped, not reset")
+        } catch is DuplicateFetchError {
+            XCTFail("Nothing else was queued")
+        }
+    }
+
     // MARK: Helpers
 
     private let zoneID = CKRecordZone.ID(zoneName: "app-facing", ownerName: CKCurrentUserDefaultName)

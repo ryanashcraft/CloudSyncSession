@@ -2,7 +2,7 @@ import Foundation
 
 /// What the session should do about work that failed. A backend's library decides this for each
 /// error its server can report and hands the session a function that returns it.
-public enum FailureResolution<Backend: SyncBackend> {
+public enum FailureResolution<Backend: SyncBackend>: Sendable {
     /// Stop until the app starts the session again. The work keeps its place in the queue.
     case halt(Error)
 

@@ -62,12 +62,13 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
     /// A Combine subject that publishes the latest account status.
     public let accountStatusSubject = CurrentValueSubject<Backend.AccountStatus?, Never>(nil)
 
-    let perform: Perform
+    let performWork: Perform
     let resolveFailure: ResolveFailure
     let accountStatusProvider: AccountStatusProvider?
     let pacing: Pacing
 
-    /// Guards `lockedState`, `runLoopTask`, `cancelCurrentStep`, and `isLookingUpAccountStatus`.
+    /// Guards `lockedState`, `runLoopTask`, `cancelCurrentStep`, `workInFlight`, `observers`, and
+    /// `isLookingUpAccountStatus`.
     let lock = NSLock()
     var lockedState = State()
     var runLoopTask: Task<Void, Never>?
@@ -75,6 +76,12 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
     /// Cancels what the run loop is waiting on right now: a wait of its own, or an operation that
     /// is being carried out. Nil when it is waiting on neither.
     var cancelCurrentStep: (@Sendable () -> Void)?
+
+    /// The work the backend has been handed, until the change that records how it ended.
+    var workInFlight: Work?
+
+    /// The open async streams and the `perform` calls that are waiting.
+    var observers = SessionObservers<Backend>()
 
     private var isLookingUpAccountStatus = false
 
@@ -97,10 +104,14 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
         accountStatusProvider: AccountStatusProvider? = nil,
         pacing: Pacing = .live
     ) {
-        self.perform = perform
+        performWork = perform
         self.resolveFailure = resolveFailure
         self.accountStatusProvider = accountStatusProvider
         self.pacing = pacing
+    }
+
+    deinit {
+        observers.finishStreams()
     }
 
     // MARK: Lifecycle
@@ -172,6 +183,7 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
         update { change in
             cancelCurrentStep?()
             change.state = State()
+            change.interruption = .reset
         }
     }
 
@@ -186,6 +198,8 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
     public func fetch(_ operation: SessionFetchOperation<Backend>) {
         update { change in
             guard !change.state.hasQueuedFetch(from: operation.changeToken) else {
+                change.state.noteFetchAlsoQueued(from: operation.changeToken)
+
                 return
             }
 
@@ -216,6 +230,9 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
         var state: State
         fileprivate(set) var events: [Event] = []
 
+        /// Set when the change stops or resets the session, for the `perform` calls it ends.
+        var interruption: SessionInterruption?
+
         mutating func emit(_ event: Event) {
             events.append(event)
         }
@@ -228,10 +245,19 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
     @discardableResult
     func update<Value>(_ body: (inout Change) -> Value) -> Value {
         lock.lock()
-        defer { lock.unlock() }
 
         var change = Change(state: lockedState)
         let value = body(&change)
+
+        let nextWorkID = change.state.currentWork?.id
+
+        observers.announce(change.events, state: &change.state, interruption: change.interruption, workInFlight: workInFlight)
+
+        // The run loop may be in a wait for work that was just withdrawn. Cut it short so that
+        // the work behind it does not sit out a backoff that is no longer anyone's.
+        if workInFlight == nil, change.state.currentWork?.id != nextWorkID {
+            cancelCurrentStep?()
+        }
 
         lockedState = change.state
 
@@ -249,6 +275,14 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
 
         startRunLoopIfNeeded()
 
+        let resumptions = observers.takeResumptions()
+
+        lock.unlock()
+
+        for resume in resumptions {
+            resume()
+        }
+
         return value
     }
 
@@ -256,6 +290,7 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
         update { change in
             change.emit(.halt(Backend.makeStopError()))
             change.state.isHalted = true
+            change.interruption = .stopped
 
             cancelCurrentStep?()
 
@@ -309,6 +344,14 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
         defer { lock.unlock() }
 
         return runLoopTask == nil && !isLookingUpAccountStatus
+    }
+
+    /// How many async streams are open.
+    var observerCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return observers.streamCount
     }
 
     /// Returns once every change made so far has been handed to observers. Events for the subjects

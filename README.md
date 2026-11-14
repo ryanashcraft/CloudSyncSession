@@ -182,6 +182,55 @@ cloudSyncSession.reset()
 
 If the account status changes while the app is running, tell the session with `cloudSyncSession.accountStatusChanged(_:)`.
 
+## Async Streams and perform
+
+Everything the Combine subjects report is also available without Combine.
+
+Each of these makes a new stream every time it is read, and every stream gets every element:
+
+- `events`: every event from the moment the stream is made. Nothing is replayed.
+- `fetchCompletions` and `modifyCompletions`: every fetch page and every modify request that completes after the stream is made.
+- `halts`: the error the session is halted on, or nil while it is not. The first element is the current value.
+- `states`: the session's state. The first element is the current state. Only the newest unread state is kept, so a slow reader skips states and never falls behind.
+
+```swift
+Task {
+    for await (operation, response) in cloudSyncSession.fetchCompletions {
+        // Process new and deleted records
+    }
+}
+```
+
+Apart from `states`, a stream drops nothing, so one that is kept but not read grows.
+
+To queue one operation and wait for it, use `perform`:
+
+```swift
+do {
+    let response = try await cloudSyncSession.perform(
+        ModifyOperation(records: records, recordIDsToDelete: [], checkpointID: nil, userInfo: nil)
+    )
+
+    // Everything in the operation is on the server
+} catch SessionInterruption.halted(let error) {
+    // The session halted. Wait for it to resume, then decide what to send
+} catch SessionInterruption.stopped {
+    // stop() or stopAndWait() was called
+} catch SessionInterruption.reset {
+    // reset() was called
+}
+```
+
+What `perform` promises:
+
+- The operation belongs to the call. It is in the session's queue only while the call waits. When the call throws, whatever part of the operation has not been sent is taken out of the queue, so it is not sent later. This is the difference from `modify(_:)` and `fetch(_:)`, whose work stays queued through a halt and is sent when the session starts again.
+- A modify returns one response for the whole operation, however many pieces the session sent it in.
+- A fetch returns its own page. When the page reports more, the session fetches the next page as usual and reports it on `fetchCompletions`. A fetch from a change token that is already queued throws `DuplicateFetchError`.
+- On a session that is already halted, the call throws at once and queues nothing.
+- When `stop()` is called while the call's own request is with the server, the call waits for that request. It returns normally if the request succeeded and that finished the operation, and throws `stopped` otherwise. If `start()` is called before that request has ended, the stop is over and the call goes on waiting.
+- Cancelling the calling task throws `CancellationError`. A request the server already has is left to finish and is reported on the streams.
+- A session that is still starting is not an error. The call waits.
+
 ## Installation
 
 To use CloudSyncSession with Swift Package Manager, add a dependency to https://github.com/ryanashcraft/CloudSyncSession

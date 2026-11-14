@@ -1,9 +1,9 @@
 import Foundation
 
 /// The state of a session.
-public struct SessionState<Backend: SyncBackend> {
+public struct SessionState<Backend: SyncBackend>: Sendable {
     /// The various modes that the session can be operating in.
-    public enum OperationMode: Hashable {
+    public enum OperationMode: Hashable, Sendable {
         case modify
         case fetch
         case setup(Backend.SetupStep)
@@ -225,6 +225,38 @@ public struct SessionState<Backend: SyncBackend> {
         }
     }
 
+    /// Whether any work a `perform` call queued is still in a queue.
+    func hasWork(performID: UUID) -> Bool {
+        modifyQueue.contains { $0.performID == performID } || fetchQueue.contains { $0.performID == performID }
+    }
+
+    /// The `perform` calls that have work in a queue.
+    var queuedPerformIDs: Set<UUID> {
+        Set(modifyQueue.compactMap(\.performID) + fetchQueue.compactMap(\.performID))
+    }
+
+    /// Take the work a `perform` call queued out of the queues, apart from the one piece with the
+    /// given ID: a request the backend already has cannot be taken back. A fetch that `fetch(_:)`
+    /// asked for as well stays queued and no longer belongs to the call.
+    mutating func withdrawWork(performID: UUID, except workInFlightID: UUID?) {
+        modifyQueue.removeAll { $0.performID == performID && $0.id != workInFlightID }
+        fetchQueue.removeAll { $0.performID == performID && $0.id != workInFlightID && !$0.isAlsoQueuedByFetch }
+
+        for index in fetchQueue.indices where fetchQueue[index].performID == performID && fetchQueue[index].id != workInFlightID {
+            fetchQueue[index].performID = nil
+            fetchQueue[index].isAlsoQueuedByFetch = false
+        }
+
+        updateOperationMode()
+    }
+
+    /// Records that `fetch(_:)` was asked for a fetch that is already queued from this change token.
+    mutating func noteFetchAlsoQueued(from changeToken: Backend.ChangeToken?) {
+        for index in fetchQueue.indices where fetchQueue[index].changeToken == changeToken && fetchQueue[index].performID != nil {
+            fetchQueue[index].isAlsoQueuedByFetch = true
+        }
+    }
+
     /// Whether a fetch from this change token is already waiting or under way.
     func hasQueuedFetch(from changeToken: Backend.ChangeToken?) -> Bool {
         fetchQueue.contains { $0.changeToken == changeToken }
@@ -243,6 +275,20 @@ public struct SessionState<Backend: SyncBackend> {
 
     /// Put other work in the place of work that is in a queue, keeping its position.
     private mutating func replaceWork(_ work: SessionWork<Backend>, with replacements: [SessionWork<Backend>]) {
+        // Stamped here so that work a backend builds for a retry cannot lose it.
+        let replacements = replacements.map { replacement in
+            var replacement = replacement
+
+            replacement.performID = work.performID
+
+            if case let .fetch(replaced) = work, case var .fetch(operation) = replacement {
+                operation.isAlsoQueuedByFetch = replaced.isAlsoQueuedByFetch
+                replacement = .fetch(operation)
+            }
+
+            return replacement
+        }
+
         switch work {
         case let .fetch(operation):
             if let index = fetchQueue.firstIndex(where: { $0.id == operation.id }) {
