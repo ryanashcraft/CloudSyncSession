@@ -70,7 +70,7 @@ public class CloudKitOperationHandler: OperationHandler {
     /// was reported as cancelled at once while every one of its records was saved. Cancelling
     /// would only mean returning before the server was done and without knowing what it did,
     /// and callers of the session's `stopAndWait()` rely on neither being the case.
-    private func send<Value>(
+    private func send<Value: Sendable>(
         _ makeOperation: (@escaping (Result<Value, Error>) -> Void) -> Operation
     ) async throws -> Value {
         try Task.checkCancellation()
@@ -570,7 +570,7 @@ struct SubscriptionExistenceResult {
 ///
 /// It makes sure the continuation is resumed exactly once: with CloudKit's result, or with a
 /// cancellation that arrived before the operation was sent.
-private final class SendingOperation<Value>: @unchecked Sendable {
+private final class SendingOperation<Value: Sendable>: @unchecked Sendable {
     private let queue: OperationQueue
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Value, Error>?
