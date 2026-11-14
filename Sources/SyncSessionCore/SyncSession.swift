@@ -198,6 +198,8 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
     public func fetch(_ operation: SessionFetchOperation<Backend>) {
         update { change in
             guard !change.state.hasQueuedFetch(from: operation.changeToken) else {
+                change.state.noteFetchAlsoQueued(from: operation.changeToken)
+
                 return
             }
 
@@ -247,7 +249,15 @@ open class SyncSession<Backend: SyncBackend>: @unchecked Sendable {
         var change = Change(state: lockedState)
         let value = body(&change)
 
+        let nextWorkID = change.state.currentWork?.id
+
         observers.announce(change.events, state: &change.state, interruption: change.interruption, workInFlight: workInFlight)
+
+        // The run loop may be in a wait for work that was just withdrawn. Cut it short so that
+        // the work behind it does not sit out a backoff that is no longer anyone's.
+        if workInFlight == nil, change.state.currentWork?.id != nextWorkID {
+            cancelCurrentStep?()
+        }
 
         lockedState = change.state
 

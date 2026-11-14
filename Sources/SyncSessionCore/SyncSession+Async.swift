@@ -112,7 +112,9 @@ public extension SyncSession {
 ///   On a session that is already halted the call throws at once and queues nothing.
 /// - `SessionInterruption.stopped` when the session is stopped. If the call's own request is
 ///   with the backend at that moment, the call first waits for it: it returns normally if the
-///   request succeeded and that finished the operation, and throws otherwise.
+///   request succeeded and that finished the operation, and throws otherwise. If `start()` is
+///   called before that request has ended, the stop is over: the call does not throw, and goes
+///   on waiting for its work.
 /// - `SessionInterruption.reset` when the session is reset.
 /// - `CancellationError` when the calling task is cancelled. A request the backend already has
 ///   is left to finish, and is reported on the streams.
@@ -130,6 +132,9 @@ public extension SyncSession {
     ///
     /// Throws `DuplicateFetchError`, and queues nothing, when a fetch from the same change token
     /// is already queued. `fetch(_:)` ignores that fetch silently.
+    ///
+    /// If `fetch(_:)` is asked for the same change token while this call's fetch is queued, the
+    /// one queued fetch serves both. It then stays queued if this call throws.
     func perform(_ operation: SessionFetchOperation<Backend>) async throws -> SessionFetchOperation<Backend>.Response {
         let performID = UUID()
         var owned = operation

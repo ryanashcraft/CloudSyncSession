@@ -267,6 +267,101 @@ final class SessionPerformTests: XCTestCase {
         XCTAssertFalse(test.session.state.hasWorkQueued)
     }
 
+    func testCancellingAPerformThatIsWaitingToRetryLetsTheWorkBehindItGoAtOnce() async {
+        let test = TestSession(holdsRetryBackoff: true)
+
+        await test.reply(.fail(.retry))
+        test.startRunning()
+
+        let performing = Task {
+            try await test.session.perform(makeModify(saves: 1))
+        }
+
+        await test.nextRequest()
+        await test.waitForEvent { event in
+            if case .retry = event {
+                return true
+            }
+
+            return false
+        }
+
+        test.session.modify(makeModify(saves: 2))
+        performing.cancel()
+
+        guard case let .modify(sent) = await test.nextRequest() else {
+            return XCTFail("Expected a modify")
+        }
+
+        XCTAssertEqual(sent.records.count, 2)
+    }
+
+    // MARK: A fetch that fetch(_:) asked for as well
+
+    func testAFetchThatFetchAlsoAskedForOutlivesACancelledPerform() async throws {
+        let test = TestSession()
+        var completions = test.session.fetchCompletions.makeAsyncIterator()
+
+        let performing = Task {
+            try await test.session.perform(FetchOperation(changeToken: 7))
+        }
+
+        await test.waitForPerformToQueue()
+
+        test.session.fetch(FetchOperation(changeToken: 7))
+        performing.cancel()
+        _ = await performing.result
+
+        XCTAssertEqual(test.session.state.fetchQueue.map(\.changeToken), [7])
+
+        test.startRunning()
+
+        let completion = await completions.next()
+
+        XCTAssertEqual(completion?.0.changeToken, 7)
+    }
+
+    func testAFetchThatFetchAlsoAskedForOutlivesAHalt() async {
+        let test = TestSession()
+        let gate = await test.hold()
+
+        test.startRunning()
+        test.session.modify(makeModify())
+        await test.nextRequest()
+
+        let performing = Task {
+            try await test.session.perform(FetchOperation(changeToken: 7))
+        }
+
+        await test.waitForPerformToQueue()
+
+        test.session.fetch(FetchOperation(changeToken: 7))
+        gate.fail(.halt)
+
+        await assertThrows(isHalted, "halted") { try await performing.value }
+
+        XCTAssertEqual(test.session.state.fetchQueue.map(\.changeToken), [7])
+        XCTAssertNil(test.session.state.fetchQueue.first?.performID)
+    }
+
+    func testAFetchThatFetchAlsoAskedForStillAnswersThePerform() async throws {
+        let test = TestSession()
+
+        let performing = Task {
+            try await test.session.perform(FetchOperation(changeToken: 7))
+        }
+
+        await test.waitForPerformToQueue()
+
+        test.session.fetch(FetchOperation(changeToken: 7))
+        test.startRunning()
+
+        let response = try await performing.value
+
+        XCTAssertEqual(response.changeToken, 8)
+        XCTAssertFalse(test.session.state.hasWorkQueued)
+    }
+
     func testAPerformFromATaskThatIsAlreadyCancelledQueuesNothing() async {
         let test = TestSession()
         let operation = makeModify()

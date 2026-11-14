@@ -71,8 +71,10 @@ final class TestSession {
     private var requests: AsyncStream<SyncWork>.Iterator
     private var events: AsyncStream<SyncSession<TestBackend>.Event>.Iterator
 
-    init() {
+    /// - Parameter holdsRetryBackoff: Whether the wait before a retry lasts until the session cuts it short.
+    init(holdsRetryBackoff: Bool = false) {
         let script = script
+        let (neverEnding, _) = AsyncStream<Never>.makeStream()
         let (requests, requestContinuation) = AsyncStream<SyncWork>.makeStream()
 
         session = SyncSession<TestBackend>(
@@ -124,7 +126,13 @@ final class TestSession {
                     return .halt(error)
                 }
             },
-            pacing: Pacing { _ in try Task.checkCancellation() }
+            pacing: Pacing { pause in
+                if holdsRetryBackoff, case .retryBackoff = pause {
+                    for await _ in neverEnding {}
+                }
+
+                try Task.checkCancellation()
+            }
         )
 
         self.requests = requests.makeAsyncIterator()

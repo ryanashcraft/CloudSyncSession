@@ -124,6 +124,11 @@ public struct SessionFetchOperation<Backend: SyncBackend>: Identifiable {
     /// the queue carries the same value.
     var performID: UUID?
 
+    /// Whether `fetch(_:)` was also asked for this fetch while a `perform` call had it queued.
+    /// The session queues one fetch per change token, so this one then stands for both, and it
+    /// has to outlive the call.
+    var isAlsoQueuedByFetch = false
+
     public init(changeToken: Backend.ChangeToken?) {
         self.changeToken = changeToken
     }

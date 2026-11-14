@@ -227,7 +227,7 @@ What `perform` promises:
 - A modify returns one response for the whole operation, however many pieces the session sent it in.
 - A fetch returns its own page. When the page reports more, the session fetches the next page as usual and reports it on `fetchCompletions`. A fetch from a change token that is already queued throws `DuplicateFetchError`.
 - On a session that is already halted, the call throws at once and queues nothing.
-- When `stop()` is called while the call's own request is with the server, the call waits for that request. It returns normally if the request succeeded and that finished the operation, and throws `stopped` otherwise.
+- When `stop()` is called while the call's own request is with the server, the call waits for that request. It returns normally if the request succeeded and that finished the operation, and throws `stopped` otherwise. If `start()` is called before that request has ended, the stop is over and the call goes on waiting.
 - Cancelling the calling task throws `CancellationError`. A request the server already has is left to finish and is reported on the streams.
 - A session that is still starting is not an error. The call waits.
 
