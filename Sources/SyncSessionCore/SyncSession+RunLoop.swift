@@ -88,9 +88,9 @@ extension SyncSession {
     private func send(_ work: Work) async -> Result<Work.Result, Error>? {
         let handedOver = Unchecked(value: work)
 
-        let operation: Task<Unchecked<Result<Work.Result, Error>>, Never>? = beginStep(whileNextIs: work) {
+        let operation: Task<Unchecked<Result<Work.Result, Error>>, Never>? = beginStep(whileNextIs: work, handsWorkToBackend: true) {
             Task(priority: .userInitiated) {
-                Unchecked(value: await self.perform(handedOver.value))
+                Unchecked(value: await self.performWork(handedOver.value))
             }
         }
 
@@ -105,6 +105,8 @@ extension SyncSession {
         // Whatever a cancelled operation reports in place of a result says nothing about the
         // work, which stays queued. A cancelled operation that succeeded anyway did the work.
         if operation.isCancelled, case .failure = result {
+            workLanded()
+
             return nil
         }
 
@@ -118,6 +120,7 @@ extension SyncSession {
     /// is seen here, in which case nothing is started, or comes after and finds the step to cancel.
     private func beginStep<Success, Failure>(
         whileNextIs work: Work,
+        handsWorkToBackend: Bool = false,
         _ start: () -> Task<Success, Failure>
     ) -> Task<Success, Failure>? {
         lock.lock()
@@ -131,6 +134,10 @@ extension SyncSession {
 
         cancelCurrentStep = { step.cancel() }
 
+        if handsWorkToBackend {
+            workInFlight = work
+        }
+
         return step
     }
 
@@ -141,10 +148,22 @@ extension SyncSession {
         cancelCurrentStep = nil
     }
 
+    /// Records that the backend no longer has the work it was handed, where the work's result
+    /// changes nothing else. A `perform` call that was waiting on the request is settled by this
+    /// change. Where the result does change the queue, that change clears `workInFlight` itself,
+    /// so that the request ending and what follows from it are one step.
+    private func workLanded() {
+        update { _ in
+            workInFlight = nil
+        }
+    }
+
     // MARK: Results
 
     private func complete(_ work: Work, with result: Work.Result) {
         update { change in
+            workInFlight = nil
+
             // Reported even if the session was stopped while the operation was under way: the
             // server has the change, and the app needs to know. After a reset the work is no longer
             // queued and its result is dropped.
@@ -160,6 +179,8 @@ extension SyncSession {
     private func recover(_ work: Work, from error: Error) async {
         // Skip the app's conflict resolver when its answer would not be used.
         guard shouldAct(onFailureOf: work, in: state) else {
+            workLanded()
+
             return
         }
 
@@ -167,6 +188,8 @@ extension SyncSession {
         let resolution = resolveFailure(error, work)
 
         let retry: (work: Work, delay: TimeInterval)? = update { change in
+            workInFlight = nil
+
             guard shouldAct(onFailureOf: work, in: change.state) else {
                 return nil
             }
@@ -270,11 +293,4 @@ extension SyncSession {
 
         return nil
     }
-}
-
-/// Carries a value between the run loop and the task of the one operation it is waiting on. Only
-/// one of the two touches the value at a time: the loop hands the work over and does not look at
-/// it again until the operation's task has finished and handed back the result.
-private struct Unchecked<Value>: @unchecked Sendable {
-    let value: Value
 }

@@ -55,7 +55,7 @@ public class CloudSyncSession: SyncSession<CloudKitBackend>, @unchecked Sendable
 
         super.init(
             perform: { work in
-                await perform(work, with: operationHandler, zoneID: zoneID)
+                await carryOut(work, with: operationHandler, zoneID: zoneID)
             },
             resolveFailure: { error, work in
                 failureResolver.resolution(for: error, work: work)
@@ -67,7 +67,7 @@ public class CloudSyncSession: SyncSession<CloudKitBackend>, @unchecked Sendable
 }
 
 /// Hands one piece of work to the handler and waits for its result.
-private func perform(
+private func carryOut(
     _ work: SyncWork,
     with operationHandler: OperationHandler,
     zoneID: CKRecordZone.ID
